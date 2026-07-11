@@ -42,11 +42,12 @@ func (Reachability) Run(ctx context.Context, t Target) Result {
 		return Result{
 			Check: "reachability", Status: StatusFail,
 			Summary: fmt.Sprintf("No reply from %s within %s", t.Address, t.Timeout),
-			Detail: "The server is unreachable, not listening on this port, or — very " +
-				"commonly — this probe's IP is not whitelisted as a RADIUS client. " +
-				"A server silently drops requests from clients it doesn't recognise. " +
-				"Add this host to clients.conf (FreeRADIUS) or RADIUS Clients (NPS) " +
-				"with the shared secret, then retry.",
+			Detail: "The server is unreachable, not listening on this port, or it is " +
+				"silently dropping this probe's requests — which happens when the " +
+				"probe's IP is not whitelisted as a RADIUS client OR when the shared " +
+				"secret is wrong (servers drop unverifiable requests without replying). " +
+				"Check the client entry in clients.conf (FreeRADIUS) or RADIUS Clients " +
+				"(NPS): both the IP and the secret must match, then retry.",
 			Fields: fields,
 		}
 	}
