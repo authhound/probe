@@ -1,0 +1,226 @@
+// Package radius implements just enough of RFC 2865/3579 for an outside-in
+// diagnostic client: build an Access-Request, hide a PAP password, add a
+// Message-Authenticator, and verify the Response Authenticator on the reply.
+//
+// The probe acts as a NAS (network access server) talking to a RADIUS server,
+// so it only ever *sends* Access-Requests and *reads* the replies.
+package radius
+
+import (
+	"crypto/hmac"
+	"crypto/md5"
+	"crypto/rand"
+	"encoding/binary"
+	"errors"
+	"fmt"
+)
+
+type Code byte
+
+const (
+	AccessRequest   Code = 1
+	AccessAccept    Code = 2
+	AccessReject    Code = 3
+	AccessChallenge Code = 11
+)
+
+func (c Code) String() string {
+	switch c {
+	case AccessRequest:
+		return "Access-Request"
+	case AccessAccept:
+		return "Access-Accept"
+	case AccessReject:
+		return "Access-Reject"
+	case AccessChallenge:
+		return "Access-Challenge"
+	default:
+		return fmt.Sprintf("Code(%d)", byte(c))
+	}
+}
+
+// Attribute types used by the probe (RFC 2865 / 3579).
+type AttrType byte
+
+const (
+	AttrUserName            AttrType = 1
+	AttrUserPassword        AttrType = 2
+	AttrNASIPAddress        AttrType = 4
+	AttrNASPort             AttrType = 5
+	AttrNASIdentifier       AttrType = 32
+	AttrEAPMessage          AttrType = 79
+	AttrMessageAuthenticator AttrType = 80
+)
+
+type Attribute struct {
+	Type  AttrType
+	Value []byte
+}
+
+type Packet struct {
+	Code          Code
+	Identifier    byte
+	Authenticator [16]byte
+	Attributes    []Attribute
+
+	// msgAuthOffset records where the Message-Authenticator value sits during
+	// encode, so the zero placeholder can be overwritten with the real HMAC.
+	// Not part of the wire format.
+	msgAuthOffset int
+}
+
+func newAuthenticator() ([16]byte, error) {
+	var a [16]byte
+	_, err := rand.Read(a[:])
+	return a, err
+}
+
+// NewAccessRequest creates an Access-Request with a fresh request authenticator.
+func NewAccessRequest(id byte) (*Packet, error) {
+	auth, err := newAuthenticator()
+	if err != nil {
+		return nil, err
+	}
+	return &Packet{Code: AccessRequest, Identifier: id, Authenticator: auth}, nil
+}
+
+func (p *Packet) Add(t AttrType, v []byte) {
+	p.Attributes = append(p.Attributes, Attribute{Type: t, Value: v})
+}
+
+func (p *Packet) AddString(t AttrType, v string) {
+	p.Add(t, []byte(v))
+}
+
+// Get returns the first attribute of type t, or nil.
+func (p *Packet) Get(t AttrType) []byte {
+	for _, a := range p.Attributes {
+		if a.Type == t {
+			return a.Value
+		}
+	}
+	return nil
+}
+
+// SetUserPassword hides the password per RFC 2865 §5.2 and adds it as
+// User-Password. Must be called after the authenticator is set.
+func (p *Packet) SetUserPassword(password, secret string) {
+	pw := []byte(password)
+	// Pad to a multiple of 16.
+	if len(pw)%16 != 0 || len(pw) == 0 {
+		pad := 16 - (len(pw) % 16)
+		if len(pw) == 0 {
+			pad = 16
+		}
+		pw = append(pw, make([]byte, pad)...)
+	}
+	out := make([]byte, len(pw))
+	prev := p.Authenticator[:]
+	for i := 0; i < len(pw); i += 16 {
+		h := md5.New()
+		h.Write([]byte(secret))
+		h.Write(prev)
+		b := h.Sum(nil)
+		for j := 0; j < 16; j++ {
+			out[i+j] = pw[i+j] ^ b[j]
+		}
+		prev = out[i : i+16]
+	}
+	p.Add(AttrUserPassword, out)
+}
+
+// encode serializes the packet. If msgAuthSecret is non-empty, a
+// Message-Authenticator (RFC 3579) is computed over the packet and appended.
+func (p *Packet) encode(msgAuthSecret string) ([]byte, error) {
+	attrs, withMsgAuth, err := p.encodeAttributes(msgAuthSecret != "")
+	if err != nil {
+		return nil, err
+	}
+	length := 20 + len(attrs)
+	if length > 4096 {
+		return nil, errors.New("radius: packet too large")
+	}
+	buf := make([]byte, 20+len(attrs))
+	buf[0] = byte(p.Code)
+	buf[1] = p.Identifier
+	binary.BigEndian.PutUint16(buf[2:4], uint16(length))
+	copy(buf[4:20], p.Authenticator[:])
+	copy(buf[20:], attrs)
+
+	if withMsgAuth {
+		// The Message-Authenticator was encoded as 16 zero bytes; HMAC-MD5 the
+		// whole packet keyed by the secret, then write it back in place.
+		mac := hmac.New(md5.New, []byte(msgAuthSecret))
+		mac.Write(buf)
+		sum := mac.Sum(nil)
+		copy(buf[p.msgAuthOffset:p.msgAuthOffset+16], sum)
+	}
+	return buf, nil
+}
+
+func (p *Packet) encodeAttributes(withMsgAuth bool) ([]byte, bool, error) {
+	var out []byte
+	for _, a := range p.Attributes {
+		if len(a.Value) > 253 {
+			return nil, false, fmt.Errorf("radius: attribute %d too long", a.Type)
+		}
+		out = append(out, byte(a.Type), byte(2+len(a.Value)))
+		out = append(out, a.Value...)
+	}
+	if withMsgAuth {
+		p.msgAuthOffset = 20 + len(out) + 2 // 20 header + attrs + type/len
+		out = append(out, byte(AttrMessageAuthenticator), 18)
+		out = append(out, make([]byte, 16)...)
+	}
+	return out, withMsgAuth, nil
+}
+
+// decode parses a reply packet. It does NOT verify anything; callers use
+// VerifyResponse for that.
+func decode(b []byte) (*Packet, error) {
+	if len(b) < 20 {
+		return nil, errors.New("radius: short packet")
+	}
+	length := int(binary.BigEndian.Uint16(b[2:4]))
+	if length < 20 || length > len(b) {
+		return nil, errors.New("radius: bad length")
+	}
+	p := &Packet{Code: Code(b[0]), Identifier: b[1]}
+	copy(p.Authenticator[:], b[4:20])
+	pos := 20
+	for pos < length {
+		if pos+2 > length {
+			return nil, errors.New("radius: truncated attribute")
+		}
+		t := AttrType(b[pos])
+		alen := int(b[pos+1])
+		if alen < 2 || pos+alen > length {
+			return nil, errors.New("radius: bad attribute length")
+		}
+		val := make([]byte, alen-2)
+		copy(val, b[pos+2:pos+alen])
+		p.Attributes = append(p.Attributes, Attribute{Type: t, Value: val})
+		pos += alen
+	}
+	return p, nil
+}
+
+// VerifyResponse checks the Response Authenticator of a reply against the
+// request authenticator and shared secret (RFC 2865 §3). A correct result
+// proves the server holds the same shared secret we do. `raw` is the exact
+// bytes received; `reqAuth` is the authenticator we sent.
+func VerifyResponse(raw []byte, reqAuth [16]byte, secret string) bool {
+	if len(raw) < 20 {
+		return false
+	}
+	var got [16]byte
+	copy(got[:], raw[4:20])
+	// Recompute: MD5(Code+ID+Length+RequestAuth+Attributes+Secret)
+	h := md5.New()
+	h.Write(raw[0:4])
+	h.Write(reqAuth[:])
+	h.Write(raw[20:])
+	h.Write([]byte(secret))
+	want := h.Sum(nil)
+	return hmac.Equal(got[:], want)
+}

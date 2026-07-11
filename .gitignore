@@ -1,0 +1,4 @@
+/authhound-probe
+/dist/
+*.log
+probe.config.json
