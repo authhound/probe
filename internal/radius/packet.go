@@ -43,13 +43,27 @@ func (c Code) String() string {
 type AttrType byte
 
 const (
-	AttrUserName            AttrType = 1
-	AttrUserPassword        AttrType = 2
-	AttrNASIPAddress        AttrType = 4
-	AttrNASPort             AttrType = 5
-	AttrNASIdentifier       AttrType = 32
-	AttrEAPMessage          AttrType = 79
+	AttrUserName             AttrType = 1
+	AttrUserPassword         AttrType = 2
+	AttrNASIPAddress         AttrType = 4
+	AttrNASPort              AttrType = 5
+	AttrReplyMessage         AttrType = 18
+	AttrState                AttrType = 24
+	AttrCalledStationID      AttrType = 30
+	AttrCallingStationID     AttrType = 31
+	AttrNASIdentifier        AttrType = 32
+	AttrNASPortType          AttrType = 61
+	AttrEAPMessage           AttrType = 79
 	AttrMessageAuthenticator AttrType = 80
+)
+
+// NAS-Port-Type values (RFC 2865). Wireless-802.11 is what real APs send;
+// including it makes the probe's request match the same network policies a
+// real 802.1X client would.
+const (
+	NASPortEthernet      = 15
+	NASPortWireless80211 = 19
+	NASPortVirtual       = 5
 )
 
 type Attribute struct {
@@ -100,6 +114,44 @@ func (p *Packet) Get(t AttrType) []byte {
 		}
 	}
 	return nil
+}
+
+// GetAllString returns the concatenated string values of every attribute of
+// type t (used for Reply-Message, which servers may split across attributes).
+func (p *Packet) GetAllString(t AttrType) string {
+	var out []byte
+	for _, a := range p.Attributes {
+		if a.Type == t {
+			out = append(out, a.Value...)
+		}
+	}
+	return string(out)
+}
+
+// AddEAP splits an EAP packet across as many EAP-Message attributes as needed
+// (each attribute value is capped at 253 bytes). RFC 3579: a receiver
+// concatenates them in order to reconstruct the EAP packet.
+func (p *Packet) AddEAP(eap []byte) {
+	for len(eap) > 0 {
+		n := 253
+		if len(eap) < n {
+			n = len(eap)
+		}
+		p.Add(AttrEAPMessage, eap[:n])
+		eap = eap[n:]
+	}
+}
+
+// ConcatEAP reassembles the EAP packet from all EAP-Message attributes, in
+// order.
+func (p *Packet) ConcatEAP() []byte {
+	var out []byte
+	for _, a := range p.Attributes {
+		if a.Type == AttrEAPMessage {
+			out = append(out, a.Value...)
+		}
+	}
+	return out
 }
 
 // SetUserPassword hides the password per RFC 2865 §5.2 and adds it as

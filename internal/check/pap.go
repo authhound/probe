@@ -3,6 +3,7 @@ package check
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/authhound/probe/internal/radius"
 )
@@ -32,9 +33,7 @@ func (PAP) Run(ctx context.Context, t Target) Result {
 	}
 	p.AddString(radius.AttrUserName, t.Username)
 	p.SetUserPassword(t.Password, t.Secret)
-	if t.NASIdentifier != "" {
-		p.AddString(radius.AttrNASIdentifier, t.NASIdentifier)
-	}
+	addCommon(p, t)
 
 	reply, _, _, err := radius.Exchange(t.Address, t.Secret, p, t.Timeout)
 	if err != nil {
@@ -57,10 +56,28 @@ func (PAP) Run(ctx context.Context, t Target) Result {
 				"doesn't, the policy simply may not permit PAP — that can be expected.",
 		}
 	case radius.AccessChallenge:
+		// A challenge means either the server wants EAP, or (with a valid
+		// password) it's a challenge-response second factor: MFA/OTP.
+		if reply.Get(radius.AttrEAPMessage) != nil {
+			return Result{
+				Check: "pap-auth", Status: StatusWarn,
+				Summary: "Server issued an EAP challenge — it expects EAP, not PAP here",
+				Detail:  "This endpoint wants an EAP method (PEAP/EAP-TLS). The server-cert check exercises that path; PAP isn't meaningful here.",
+			}
+		}
+		prompt := reply.GetAllString(radius.AttrReplyMessage)
+		detail := "The server accepted the primary credentials and is now asking for a " +
+			"second factor (OTP/passcode, or a push it just sent to the user's phone). " +
+			"That means the RADIUS primary-auth path is healthy — the MFA layer is separate " +
+			"and this probe intentionally does not complete second factors. For monitoring, " +
+			"use a test account exempt from MFA so the primary path can be validated cleanly."
+		if prompt != "" {
+			detail = "Server prompt: \"" + strings.TrimSpace(prompt) + "\". " + detail
+		}
 		return Result{
 			Check: "pap-auth", Status: StatusWarn,
-			Summary: "Server issued a challenge — it expects EAP, not PAP here",
-			Detail:  "This endpoint wants an EAP method (PEAP/EAP-TLS). PAP testing isn't meaningful against it; use the EAP checks (coming soon) instead.",
+			Summary: "Primary credentials accepted; server issued an MFA/second-factor challenge",
+			Detail:  detail,
 		}
 	default:
 		return Result{Check: "pap-auth", Status: StatusInfo, Summary: "Unexpected reply: " + reply.Code.String()}

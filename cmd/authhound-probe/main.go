@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/authhound/probe/internal/check"
+	"github.com/authhound/probe/internal/radius"
 	"github.com/authhound/probe/internal/report"
 )
 
@@ -50,7 +51,10 @@ func cmdTest(args []string) int {
 	secret := fs.String("secret", "", "shared secret configured for this probe on the server")
 	pap := fs.String("pap", "", "run a PAP auth test with these credentials: user:password")
 	nasID := fs.String("nas-id", "authhound-probe", "NAS-Identifier to send")
+	nasPortType := fs.String("nas-port-type", "wireless", "NAS-Port-Type: wireless, ethernet, or virtual")
+	serverName := fs.String("server-name", "", "expected server certificate name (TLS SNI); optional")
 	timeout := fs.Duration("timeout", 5*time.Second, "per-request timeout")
+	jsonOut := fs.Bool("json", false, "emit results as JSON instead of text")
 	noColor := fs.Bool("no-color", false, "disable ANSI colour")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: authhound-probe test --server HOST --secret SECRET [--pap user:pass]")
@@ -69,11 +73,18 @@ func cmdTest(args []string) int {
 		addr += ":1812"
 	}
 
+	portType, ok := nasPortTypes[*nasPortType]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "error: --nas-port-type must be wireless, ethernet, or virtual\n")
+		return 2
+	}
+
 	target := check.Target{
 		Address:       addr,
 		Secret:        *secret,
 		Timeout:       *timeout,
 		NASIdentifier: *nasID,
+		NASPortType:   portType,
 	}
 	if *pap != "" {
 		u, p, ok := strings.Cut(*pap, ":")
@@ -84,9 +95,18 @@ func cmdTest(args []string) int {
 		target.Username, target.Password = u, p
 	}
 
-	fmt.Printf("Testing RADIUS server %s (as NAS %q)\n\n", addr, *nasID)
+	// Sink: JSON for scripting, text for humans.
+	var sink interface {
+		check.ResultSink
+		Failed() bool
+	}
+	if *jsonOut {
+		sink = report.NewJSONSink(os.Stdout)
+	} else {
+		fmt.Printf("Testing RADIUS server %s (as NAS %q)\n\n", addr, *nasID)
+		sink = report.NewTextSink(os.Stdout, !*noColor)
+	}
 
-	sink := report.NewTextSink(os.Stdout, !*noColor)
 	runner := check.Runner{Sink: sink}
 	plan := check.Plan{
 		Target: target,
@@ -94,7 +114,7 @@ func cmdTest(args []string) int {
 			check.Reachability{},
 			check.SharedSecret{},
 			check.PAP{},
-			check.EAPTLSCert{},
+			check.ServerCert{ServerName: *serverName},
 		},
 	}
 	runner.Run(context.Background(), plan)
@@ -104,6 +124,12 @@ func cmdTest(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+var nasPortTypes = map[string]int{
+	"wireless": radius.NASPortWireless80211,
+	"ethernet": radius.NASPortEthernet,
+	"virtual":  radius.NASPortVirtual,
 }
 
 func cmdConnect() {

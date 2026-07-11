@@ -24,9 +24,7 @@ func (Reachability) Run(ctx context.Context, t Target) Result {
 		return Result{Check: "reachability", Status: StatusFail, Summary: "internal error building request: " + err.Error()}
 	}
 	p.AddString(radius.AttrUserName, "authhound-probe")
-	if t.NASIdentifier != "" {
-		p.AddString(radius.AttrNASIdentifier, t.NASIdentifier)
-	}
+	addCommon(p, t)
 
 	_, _, rtt, err := radius.Exchange(t.Address, t.Secret, p, t.Timeout)
 	fields := map[string]string{"rtt_ms": strconv.FormatInt(rtt.Milliseconds(), 10)}

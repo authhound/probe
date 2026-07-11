@@ -29,9 +29,7 @@ func (SharedSecret) Run(ctx context.Context, t Target) Result {
 	// A wrong password is fine here — we only care whether the reply is signed
 	// with our secret, not whether auth succeeds.
 	p.SetUserPassword("authhound-probe-secret-check", t.Secret)
-	if t.NASIdentifier != "" {
-		p.AddString(radius.AttrNASIdentifier, t.NASIdentifier)
-	}
+	addCommon(p, t)
 
 	reqAuth := p.Authenticator
 	_, raw, _, err := radius.Exchange(t.Address, t.Secret, p, t.Timeout)

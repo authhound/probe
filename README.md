@@ -14,21 +14,28 @@ Testing RADIUS server radius.corp.com:1812 (as NAS "authhound-probe")
 PASS  RADIUS server answered in 23ms
 PASS  Shared secret is correct (reply signature verified)
 PASS  PAP authentication accepted for alice
-SKIP  EAP-TLS certificate inspection is coming in the next release
+PASS  Server certificate valid for 214 more days, chain looks complete (TLS 1.2)
 
-Verdict: 3 passed, 0 failed, 0 warnings, 1 skipped
+Verdict: 4 passed, 0 failed, 0 warnings
 ```
+
+Add `--json` for scripting, `--nas-port-type ethernet|wireless|virtual` to match
+how your real NAS presents itself, and `--server-name` to set the expected cert name.
 
 ## What it checks (v1)
 
 | Check | What it proves |
 |---|---|
-| **Reachability** | The server answers on UDP/1812 — and how fast. A timeout means unreachable, not listening, **or this probe isn't whitelisted as a RADIUS client** (servers silently drop unknown clients). |
+| **Reachability** | The server answers on UDP/1812 — and how fast. A timeout means unreachable, not listening, **or the probe isn't whitelisted / the secret is wrong** (servers silently drop unverifiable requests). |
 | **Shared secret** | Cryptographically verifies the server's reply signature. A pass *proves* the secret matches — no more guessing whether "everyone's getting rejected" is a secret problem or something else. |
-| **PAP authentication** | A real login with credentials you supply → Accept or Reject, decoded. Useful as a baseline: if PAP works but PEAP doesn't, the problem is in the TLS/EAP layer. |
-| **EAP-TLS certificate** | *Coming next* — captures the server certificate chain over a real EAP-TLS handshake and flags expiry, missing intermediates, and weak TLS versions. |
+| **PAP authentication** | A real login with credentials you supply → Accept or Reject, decoded. Also detects an **MFA/second-factor challenge** and reports it (the probe does not complete push/OTP — see below). |
+| **Server certificate** | Establishes the PEAP/TLS tunnel over RADIUS, captures the server's certificate, and flags **expiry**, an incomplete intermediate chain, and the negotiated TLS version. The "Wi-Fi died overnight" outage, caught early. |
 
-Every check is **read-only**. The probe never changes anything on your server, never captures packets, and rate-limits itself with a hard-coded ceiling that no flag can override — it cannot be turned into a load generator.
+Every check is **read-only**. The probe never changes anything on your server, never captures packets, never completes a second factor, and rate-limits itself with a hard-coded ceiling that no flag can override — it cannot be turned into a load generator. Roadmap for PEAP-MSCHAPv2 / EAP-TLS auth and more: [ROADMAP.md](ROADMAP.md).
+
+### A note on MFA (JumpCloud, Duo, Okta)
+
+If the server issues an MFA challenge after valid primary credentials, the probe reports that boundary — *"primary auth healthy, second factor required"* — but does **not** approve a push or submit an OTP. Completing a second factor from an unattended probe would mean storing a live MFA secret, which this tool refuses to do. For monitoring, point it at a **test account exempt from MFA** so the primary RADIUS path is validated cleanly.
 
 ## Install
 

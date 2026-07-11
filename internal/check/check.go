@@ -31,9 +31,9 @@ const (
 type Result struct {
 	Check    string            `json:"check"`
 	Status   Status            `json:"status"`
-	Summary  string            `json:"summary"`            // one plain-English line
-	Detail   string            `json:"detail,omitempty"`   // optional extra context
-	Fields   map[string]string `json:"fields,omitempty"`   // e.g. rtt_ms, tls_version
+	Summary  string            `json:"summary"`          // one plain-English line
+	Detail   string            `json:"detail,omitempty"` // optional extra context
+	Fields   map[string]string `json:"fields,omitempty"` // e.g. rtt_ms, tls_version
 	Duration time.Duration     `json:"duration_ns,omitempty"`
 }
 
@@ -45,6 +45,12 @@ type Target struct {
 	Secret        string
 	Timeout       time.Duration
 	NASIdentifier string
+
+	// NAS attributes make the probe's request look like a real 802.1X client so
+	// server network policies (which key on these) evaluate the same way.
+	NASPortType    int // radius.NASPort* value; 0 = omit
+	CalledStation  string
+	CallingStation string
 
 	// Credentials for auth checks; empty means "skip that check".
 	Username string
