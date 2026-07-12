@@ -1,0 +1,52 @@
+name: Release
+
+# Cut a release by pushing a semver tag, e.g. `git tag v0.1.0 && git push origin v0.1.0`.
+# See RELEASING.md for the full procedure.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the GitHub Release + upload archives/checksums
+  packages: write # push images to ghcr.io
+  id-token: write # OIDC token for cosign keyless signing (Sigstore/Fulcio)
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # goreleaser needs full history + tags for the changelog
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      # Multi-arch (arm64) image builds run under QEMU emulation.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          # Pinned to the 2.17 patch line for reproducible releases. The Docker
+          # config uses the classic `dockers`/`docker_manifests` blocks (still
+          # supported here); bump deliberately and re-run `goreleaser check`.
+          # See RELEASING.md.
+          version: "~> v2.17.0"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

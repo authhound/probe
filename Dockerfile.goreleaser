@@ -1,0 +1,12 @@
+# Built by GoReleaser: the static binary is already compiled and dropped into
+# the build context, so this stage only wraps it. No build tools, no shell.
+#
+# Base is distroless "static" (nonroot), pinned by digest for a reproducible,
+# auditable supply chain. The digest below is the multi-arch `nonroot` index
+# (linux/amd64 + linux/arm64). To refresh it, see RELEASING.md.
+FROM gcr.io/distroless/static@sha256:d29e660cc75a5b6b1334e03c5c81ccf9bc0884a002c6000dbf0fb96034814478
+
+COPY authhound-probe /usr/bin/authhound-probe
+
+# Runs as the distroless nonroot user (uid 65532) by default.
+ENTRYPOINT ["/usr/bin/authhound-probe"]

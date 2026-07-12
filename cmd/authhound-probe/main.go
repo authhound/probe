@@ -16,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -24,7 +25,25 @@ import (
 	"github.com/authhound/probe/internal/report"
 )
 
-const version = "0.1.0"
+// version is stamped at release time by GoReleaser via
+// -ldflags "-X main.version=<tag>". For `go install ...@latest` builds (no
+// ldflags) it stays "dev" and resolveVersion falls back to the module version
+// Go records in the build info.
+var version = "dev"
+
+// resolveVersion returns the release tag when stamped, otherwise the module
+// version recorded by `go install` (e.g. v0.1.0), otherwise "dev".
+func resolveVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v := info.Main.Version; v != "" && v != "(devel)" {
+			return v
+		}
+	}
+	return version
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -39,7 +58,7 @@ func main() {
 	case "connect":
 		cmdConnect()
 	case "version", "-v", "--version":
-		fmt.Println("authhound-probe", version)
+		fmt.Println("authhound-probe", resolveVersion())
 	case "help", "-h", "--help":
 		usage()
 	default:

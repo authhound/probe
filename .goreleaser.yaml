@@ -1,13 +1,127 @@
 version: 2
 project_name: authhound-probe
+
+before:
+  hooks:
+    - go mod tidy
+
 builds:
   - main: ./cmd/authhound-probe
     binary: authhound-probe
     env: [CGO_ENABLED=0]
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      # Stamp the release tag into the binary. resolveVersion() in main.go
+      # falls back to the module version for `go install` builds.
+      - -s -w -X main.version={{ .Version }}
+
 archives:
-  - formats: [tar.gz]
+  # Version-less names so the README's `releases/latest/download/<name>` links
+  # are stable across releases. Windows uses .zip via the override below.
+  # -> authhound-probe_linux_amd64.tar.gz, authhound-probe_windows_amd64.zip, ...
+  - name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
     format_overrides:
       - goos: windows
         formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# Keyless (Sigstore) signing of the checksums file. Because checksums.txt lists
+# the SHA256 of every archive, one verified signature over it transitively
+# authenticates every artifact. Produces checksums.txt.sig + checksums.txt.pem.
+# Requires cosign + an OIDC token (GitHub Actions provides one; id-token: write).
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+dockers:
+  - image_templates:
+      - "ghcr.io/authhound/probe:{{ .Version }}-amd64"
+    use: buildx
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile.goreleaser
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.description=Test any RADIUS server from inside your network"
+      - "--label=org.opencontainers.image.url=https://github.com/authhound/probe"
+      - "--label=org.opencontainers.image.source=https://github.com/authhound/probe"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+  - image_templates:
+      - "ghcr.io/authhound/probe:{{ .Version }}-arm64"
+    use: buildx
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile.goreleaser
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.description=Test any RADIUS server from inside your network"
+      - "--label=org.opencontainers.image.url=https://github.com/authhound/probe"
+      - "--label=org.opencontainers.image.source=https://github.com/authhound/probe"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+
+docker_manifests:
+  - name_template: "ghcr.io/authhound/probe:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/authhound/probe:{{ .Version }}-amd64"
+      - "ghcr.io/authhound/probe:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/authhound/probe:latest"
+    image_templates:
+      - "ghcr.io/authhound/probe:{{ .Version }}-amd64"
+      - "ghcr.io/authhound/probe:{{ .Version }}-arm64"
+
+# Keyless signing of the multi-arch manifests, same OIDC identity as above.
+docker_signs:
+  - cmd: cosign
+    artifacts: manifests
+    args:
+      - sign
+      - "${artifact}@${digest}"
+      - "--yes"
+    output: true
+
+release:
+  github:
+    owner: authhound
+    name: probe
+  prerelease: auto
+  # Don't clobber a hand-written release body if one exists.
+  mode: keep-existing
+  footer: |
+    ---
+    ## Verify your download
+    See the "Verify your download" section of the README for copy-paste
+    cosign + sha256sum verification commands.
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"

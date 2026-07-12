@@ -144,11 +144,52 @@ $ ./authhound-probe radius test --server ... --secret ...
 $ go install github.com/authhound/probe/cmd/authhound-probe@latest
 ```
 
-**Docker:**
+**Docker** (multi-arch: amd64 + arm64, distroless base):
 
 ```console
-$ docker run --rm authhound/probe radius test --server radius.corp.com --secret '••••'
+$ docker run --rm ghcr.io/authhound/probe radius test --server radius.corp.com --secret '••••'
 ```
+
+Every release also ships `authhound-probe_linux_arm64.tar.gz` and macOS/Windows
+archives — swap `linux_amd64` in the curl above for your platform
+(`linux_arm64` for a Raspberry Pi, `darwin_arm64` for Apple Silicon,
+`windows_amd64.zip` for Windows).
+
+## Verify your download
+
+Every release artifact is checksummed and **keyless-signed with [Sigstore](https://www.sigstore.dev/) cosign** — no long-lived signing key exists; the signature is bound to the GitHub Actions release workflow via a short-lived OIDC certificate, and logged in the public [Rekor](https://docs.sigstore.dev/logging/overview/) transparency log. You can prove an artifact was built by this repo's tagged release pipeline and was not tampered with:
+
+```console
+# 1. Download the archive, the checksums file, and its cosign signature + certificate.
+$ base=https://github.com/authhound/probe/releases/latest/download
+$ curl -sSLO $base/authhound-probe_linux_amd64.tar.gz
+$ curl -sSLO $base/checksums.txt
+$ curl -sSLO $base/checksums.txt.sig
+$ curl -sSLO $base/checksums.txt.pem
+
+# 2. Verify checksums.txt was signed by our release workflow (fails on any mismatch).
+$ cosign verify-blob \
+    --certificate checksums.txt.pem \
+    --signature   checksums.txt.sig \
+    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+    --certificate-identity-regexp '^https://github.com/authhound/probe/\.github/workflows/release\.yml@refs/tags/v.*$' \
+    checksums.txt
+# -> Verified OK
+
+# 3. checksums.txt is now trusted — verify the archive's hash against it.
+$ sha256sum --ignore-missing -c checksums.txt
+# -> authhound-probe_linux_amd64.tar.gz: OK
+```
+
+The `--certificate-identity-regexp` pins **who** signed it (the `release.yml` workflow in `authhound/probe`, running on a `v*` tag); the `--certificate-oidc-issuer` pins **how** they authenticated (GitHub's OIDC provider). Both must match or verification fails — a signature alone is not enough. The container image is signed the same way; verify it with:
+
+```console
+$ cosign verify ghcr.io/authhound/probe:latest \
+    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+    --certificate-identity-regexp '^https://github.com/authhound/probe/\.github/workflows/release\.yml@refs/tags/v.*$'
+```
+
+> **No `sha256sum` / `cosign` on Windows?** `cosign` ships as a single static `.exe` ([releases](https://github.com/sigstore/cosign/releases)); for the hash alone, `certutil -hashfile authhound-probe_windows_amd64.zip SHA256` prints a digest you can compare by eye against `checksums.txt`.
 
 ## Where to run it
 
@@ -190,6 +231,7 @@ Built to be safe to run against production, and to pass an enterprise security r
 - **Credentials stay local.** Secrets and passwords are used only to build the RADIUS packets. They are never written to output or logs, and nothing is ever sent anywhere (there is no telemetry).
 - **Never completes a second factor** and never proxies authentication.
 - **Hard-coded rate ceiling** the config cannot override — it cannot be turned into a load generator.
+- **Verifiable releases.** Binaries and images are checksummed and keyless-signed (Sigstore cosign) by the tagged release workflow — [verify them](#verify-your-download) before you trust them on a shared jump box.
 - **Open source (Apache-2.0).** Read it — or run `./test/freeradius-smoke.sh` to watch it work against a throwaway FreeRADIUS in Docker.
 
 ## From spot-check to continuous monitoring
