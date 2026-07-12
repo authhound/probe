@@ -31,7 +31,7 @@ how your real NAS presents itself, and `--server-name` to set the expected cert 
 | **PAP authentication** | A real login with credentials you supply → Accept or Reject, decoded. Also detects an **MFA/second-factor challenge** and reports it (the probe does not complete push/OTP — see below). |
 | **Server certificate** | Establishes the PEAP/TLS tunnel over RADIUS, captures the server's certificate, and flags **expiry**, an incomplete intermediate chain, and the negotiated TLS version. The "Wi-Fi died overnight" outage, caught early. |
 
-Every check is **read-only**. The probe never changes anything on your server, never captures packets, never completes a second factor, and rate-limits itself with a hard-coded ceiling that no flag can override — it cannot be turned into a load generator. Roadmap for PEAP-MSCHAPv2 / EAP-TLS auth and more: [ROADMAP.md](ROADMAP.md).
+Every check is **read-only**. The probe never changes anything on your server, never captures packets, never completes a second factor, and rate-limits itself with a hard-coded ceiling that no flag can override — it cannot be turned into a load generator. PEAP-MSCHAPv2 and EAP-TLS authentication tests are in progress.
 
 ### A note on MFA (JumpCloud, Duo, Okta)
 
