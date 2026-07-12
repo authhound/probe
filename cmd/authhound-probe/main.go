@@ -34,6 +34,8 @@ func main() {
 	switch os.Args[1] {
 	case "radius":
 		os.Exit(cmdRadius(os.Args[2:]))
+	case "radsec":
+		os.Exit(cmdRadsec(os.Args[2:]))
 	case "connect":
 		cmdConnect()
 	case "version", "-v", "--version":
@@ -74,6 +76,84 @@ Runs local, read-only RADIUS/802.1X checks. Nothing leaves this host.
 Run 'authhound-probe radius test --help' for all flags.`)
 }
 
+// cmdRadsec dispatches the RadSec (RADIUS/TLS) subcommands.
+func cmdRadsec(args []string) int {
+	if len(args) < 1 {
+		radsecUsage()
+		return 2
+	}
+	switch args[0] {
+	case "test":
+		return cmdRadsecTest(args[1:])
+	case "help", "-h", "--help":
+		radsecUsage()
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "unknown radsec subcommand %q\n\n", args[0])
+		radsecUsage()
+		return 2
+	}
+}
+
+func radsecUsage() {
+	fmt.Fprintln(os.Stderr, `Usage: authhound-probe radsec test --server HOST [--client-cert cert.pem --client-key key.pem]
+
+Checks a RadSec (RADIUS/TLS, TCP/2083) endpoint: reachability, TLS handshake,
+server certificate, and a RADIUS exchange over the tunnel. Read-only.`)
+}
+
+func cmdRadsecTest(args []string) int {
+	fs := flag.NewFlagSet("radsec test", flag.ExitOnError)
+	server := fs.String("server", "", "RadSec server host or host:port (default port 2083)")
+	clientCert := fs.String("client-cert", "", "client certificate (PEM) for mutual TLS; optional")
+	clientKey := fs.String("client-key", "", "client private key (PEM); required with --client-cert")
+	serverName := fs.String("server-name", "", "expected server certificate name (TLS SNI); optional")
+	timeout := fs.Duration("timeout", 5*time.Second, "connection/handshake timeout")
+	jsonOut := fs.Bool("json", false, "emit results as JSON instead of text")
+	noColor := fs.Bool("no-color", false, "disable ANSI colour")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: authhound-probe radsec test --server HOST [--client-cert cert.pem --client-key key.pem]")
+		fmt.Fprint(os.Stderr, "\nChecks a RadSec (RADIUS/TLS, TCP/2083) endpoint. Nothing leaves this host.\n\nFlags:\n")
+		fs.PrintDefaults()
+	}
+	_ = fs.Parse(args)
+
+	if *server == "" {
+		fmt.Fprint(os.Stderr, "error: --server is required\n\n")
+		fs.Usage()
+		return 2
+	}
+	if (*clientCert == "") != (*clientKey == "") {
+		fmt.Fprintln(os.Stderr, "error: --client-cert and --client-key must be given together")
+		return 2
+	}
+	addr := *server
+	if !strings.Contains(addr, ":") {
+		addr += ":2083"
+	}
+
+	var sink interface {
+		check.ResultSink
+		Failed() bool
+	}
+	if *jsonOut {
+		sink = report.NewJSONSink(os.Stdout)
+	} else {
+		fmt.Printf("Testing RadSec endpoint %s\n\n", addr)
+		sink = report.NewTextSink(os.Stdout, !*noColor)
+	}
+
+	results := check.RadSecReport(context.Background(), addr, *clientCert, *clientKey, *serverName, *timeout)
+	for _, r := range results {
+		sink.Emit(r)
+	}
+	_ = sink.Close()
+	if sink.Failed() {
+		return 1
+	}
+	return 0
+}
+
 func cmdRadiusTest(args []string) int {
 	fs := flag.NewFlagSet("radius test", flag.ExitOnError)
 	server := fs.String("server", "", "RADIUS server host or host:port (default port 1812)")
@@ -85,6 +165,7 @@ func cmdRadiusTest(args []string) int {
 	nasID := fs.String("nas-id", "authhound-probe", "NAS-Identifier to send")
 	nasPortType := fs.String("nas-port-type", "wireless", "NAS-Port-Type: wireless, ethernet, or virtual")
 	serverName := fs.String("server-name", "", "expected server certificate name (TLS SNI); optional")
+	mtu := fs.Bool("mtu", false, "run the path-MTU / fragmentation probe (sends a few padded packets)")
 	timeout := fs.Duration("timeout", 5*time.Second, "per-request timeout")
 	jsonOut := fs.Bool("json", false, "emit results as JSON instead of text")
 	noColor := fs.Bool("no-color", false, "disable ANSI colour")
@@ -156,6 +237,7 @@ func cmdRadiusTest(args []string) int {
 			check.PEAPMSCHAPv2{User: peapUser, Pass: peapPass, ServerName: *serverName},
 			check.EAPTLS{CertFile: *clientCert, KeyFile: *clientKey, ServerName: *serverName},
 			check.ServerCert{ServerName: *serverName},
+			check.MTUProbe{Enabled: *mtu},
 		},
 	}
 	runner.Run(context.Background(), plan)
@@ -198,10 +280,11 @@ func usage() {
 
 Usage:
   authhound-probe radius test --server HOST --secret SECRET [--pap user:pass]
+  authhound-probe radsec test --server HOST [--client-cert cert.pem --client-key key.pem]
   authhound-probe connect             (premium: continuous monitoring)
   authhound-probe version
 
-'radius test' runs once, locally, with no account — nothing you enter leaves
-this host. More protocols (ldap, sso) are planned as sibling commands.
+'radius test' and 'radsec test' run once, locally, with no account — nothing you
+enter leaves this host. More protocols (ldap, sso) are planned as sibling commands.
 Full docs: https://authhound.com`)
 }

@@ -47,10 +47,10 @@ openssl req -x509 -newkey rsa:2048 -keyout "$work/bad.key" -out "$work/bad.pem" 
   -days 1 -nodes -subj "/CN=untrusted-test" >/dev/null 2>&1 || true
 
 echo
-echo "== correct secret + valid PAP + PEAP-MSCHAPv2 + EAP-TLS (expect PASS) =="
+echo "== correct secret + valid PAP + PEAP-MSCHAPv2 + EAP-TLS + MTU probe (expect PASS) =="
 "$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" \
   --pap 'alice:pw' --peap 'alice:pw' \
-  --client-cert "$work/cert.pem" --client-key "$work/key.pem" --no-color || true
+  --client-cert "$work/cert.pem" --client-key "$work/key.pem" --mtu --no-color || true
 
 echo
 echo "== wrong secret (expect shared-secret FAIL or no verify) =="

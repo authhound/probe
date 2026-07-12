@@ -49,6 +49,7 @@ const (
 	AttrNASPort              AttrType = 5
 	AttrReplyMessage         AttrType = 18
 	AttrState                AttrType = 24
+	AttrProxyState           AttrType = 33 // echoed unchanged by the server (RFC 2865)
 	AttrCalledStationID      AttrType = 30
 	AttrCallingStationID     AttrType = 31
 	AttrNASIdentifier        AttrType = 32

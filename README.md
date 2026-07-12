@@ -35,6 +35,8 @@ Like `eapol_test` or `radtest`, but the output is readable — one command, no `
 | **PEAP-MSCHAPv2** | The method most enterprise 802.1X networks actually run: a real inner authentication inside the PEAP TLS tunnel. Reports success — and verifies the server's own MSCHAPv2 proof (mutual auth) — or the decoded reason on rejection. The "can my users actually log in?" test. |
 | **EAP-TLS** | Certificate-based login (no password): presents a client certificate and reports whether the server accepts it — with a plain-English reason on failure (untrusted CA, expired cert, policy reject). See [EAP-TLS: preparing a client certificate](#eap-tls-preparing-a-client-certificate). |
 | **Server certificate** | Establishes the PEAP/TLS tunnel over RADIUS, captures the server's certificate, and flags **expiry**, an incomplete intermediate chain, and the negotiated TLS version. The "Wi-Fi died overnight" outage, caught early. |
+| **Path MTU / fragmentation** (`--mtu`) | Finds the largest RADIUS packet that survives the round trip. Pinpoints the invisible failure where a firewall or VPN drops large / IP-fragmented UDP, so the multi-kilobyte EAP-TLS certificate flight never arrives and 802.1X silently stalls — while every server-side log looks clean. |
+| **RadSec** (`radsec test`) | Checks a RADIUS/TLS endpoint on TCP/2083: reachability, TLS handshake, server certificate, and a RADIUS exchange over the tunnel. For modern deployments and UDP→RadSec migration readiness. |
 
 ### A note on MFA / two-factor
 
@@ -61,13 +63,27 @@ $ authhound-probe radius test --server radius.corp.com --secret '••••' -
 $ authhound-probe radius test --server radius.corp.com --secret '••••' \
     --client-cert client.pem --client-key client.key
 
+# add the path-MTU / fragmentation probe (troubleshooting EAP-TLS stalls)
+$ authhound-probe radius test --server radius.corp.com --secret '••••' --mtu
+
 # several at once
 $ authhound-probe radius test --server radius.corp.com --secret '••••' \
     --pap 'user:password' --peap 'user:password' \
+    --client-cert client.pem --client-key client.key --mtu
+```
+
+**RadSec** (RADIUS/TLS on TCP/2083) is a separate subcommand — it checks
+reachability, the TLS handshake, the server certificate, and a RADIUS exchange
+over the tunnel. RadSec is usually mutual TLS, so supply a client cert if the
+endpoint requires one:
+
+```console
+$ authhound-probe radsec test --server radius.corp.com
+$ authhound-probe radsec test --server radius.corp.com \
     --client-cert client.pem --client-key client.key
 ```
 
-**All flags:**
+**`radius test` flags:**
 
 | Flag | Purpose |
 |---|---|
@@ -76,6 +92,7 @@ $ authhound-probe radius test --server radius.corp.com --secret '••••' \
 | `--pap user:pass` | Run a PAP authentication test. |
 | `--peap user:pass` | Run a PEAP-MSCHAPv2 authentication test. |
 | `--client-cert FILE` `--client-key FILE` | Run an EAP-TLS test with this client certificate + key (PEM). |
+| `--mtu` | Run the path-MTU / fragmentation probe (sends a few padded packets). |
 | `--nas-port-type wireless\|ethernet\|virtual` | How the probe presents itself, so server policies match (default `wireless`). |
 | `--server-name NAME` | Expected server-certificate name (TLS SNI). |
 | `--nas-id NAME` | NAS-Identifier to send (default `authhound-probe`). |
