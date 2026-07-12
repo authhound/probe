@@ -1,0 +1,4 @@
+# Test users for the lab. Replaces FreeRADIUS's default authorize file; a single
+# Cleartext-Password line is all the pap/peap/ttls modules need. NOT a secret —
+# throwaway credentials for a local container.
+alice Cleartext-Password := "pw"

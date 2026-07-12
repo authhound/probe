@@ -1,0 +1,30 @@
+# Minimal RadSec (RADIUS/TLS, RFC 6614) listener on TCP/2083 for the test lab.
+# Mutual TLS: a connecting client must present a certificate signed by the
+# server's CA. The shared secret for RADIUS/TLS is the RFC-fixed value "radsec".
+# Uses the test certs FreeRADIUS generates on first boot. Nothing secret here.
+#
+# NOTE: TLS sockets require threading, so FreeRADIUS must run with -fxx (not -X).
+listen {
+	type = auth
+	ipaddr = *
+	port = 2083
+	proto = tcp
+	clients = radsec
+	virtual_server = default
+	tls {
+		private_key_password = whatever
+		private_key_file = ${certdir}/server.pem
+		certificate_file = ${certdir}/server.pem
+		ca_file = ${cadir}/ca.pem
+		fragment_size = 8192
+		require_client_cert = yes
+	}
+}
+
+clients radsec {
+	client 127.0.0.1 {
+		ipaddr = 127.0.0.1
+		proto = tls
+		secret = radsec
+	}
+}

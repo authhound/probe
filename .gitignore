@@ -2,3 +2,9 @@
 /dist/
 *.log
 probe.config.json
+
+# Local test-cert artifacts (extracted from the lab per test/README.md)
+client.pem
+client.key
+client.p12
+*.p12

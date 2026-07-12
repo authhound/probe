@@ -160,6 +160,7 @@ func cmdRadiusTest(args []string) int {
 	secret := fs.String("secret", "", "shared secret configured for this probe on the server")
 	pap := fs.String("pap", "", "run a PAP auth test with these credentials: user:password")
 	peap := fs.String("peap", "", "run a PEAP-MSCHAPv2 auth test with these credentials: user:password")
+	ttls := fs.String("ttls", "", "run an EAP-TTLS (inner PAP) auth test with these credentials: user:password")
 	clientCert := fs.String("client-cert", "", "client certificate (PEM) for an EAP-TLS auth test")
 	clientKey := fs.String("client-key", "", "client private key (PEM) for the EAP-TLS test")
 	nasID := fs.String("nas-id", "authhound-probe", "NAS-Identifier to send")
@@ -210,6 +211,11 @@ func cmdRadiusTest(args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}
+	ttlsUser, ttlsPass, err := splitCreds(*ttls, "--ttls")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
 	if (*clientCert == "") != (*clientKey == "") {
 		fmt.Fprintln(os.Stderr, "error: --client-cert and --client-key must be given together")
 		return 2
@@ -235,6 +241,7 @@ func cmdRadiusTest(args []string) int {
 			check.SharedSecret{},
 			check.PAP{User: papUser, Pass: papPass},
 			check.PEAPMSCHAPv2{User: peapUser, Pass: peapPass, ServerName: *serverName},
+			check.EAPTTLS{User: ttlsUser, Pass: ttlsPass, ServerName: *serverName},
 			check.EAPTLS{CertFile: *clientCert, KeyFile: *clientKey, ServerName: *serverName},
 			check.ServerCert{ServerName: *serverName},
 			check.MTUProbe{Enabled: *mtu},

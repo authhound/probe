@@ -21,13 +21,43 @@ cat > "$work/authorize" <<'EOF'
 alice Cleartext-Password := "pw"
 EOF
 
-echo "== starting FreeRADIUS (debug) =="
+# A minimal RadSec (RADIUS/TLS) listener on TCP/2083 so we can test 'radsec test'
+# against a real server. Mutual TLS: the client must present a cert signed by the
+# server's CA. (TLS sockets need threading, so we run radiusd -fxx, not -X.)
+cat > "$work/radsec" <<'EOF'
+listen {
+	type = auth
+	ipaddr = *
+	port = 2083
+	proto = tcp
+	clients = radsec
+	virtual_server = default
+	tls {
+		private_key_password = whatever
+		private_key_file = ${certdir}/server.pem
+		certificate_file = ${certdir}/server.pem
+		ca_file = ${cadir}/ca.pem
+		fragment_size = 8192
+		require_client_cert = yes
+	}
+}
+clients radsec {
+	client 127.0.0.1 {
+		ipaddr = 127.0.0.1
+		proto = tls
+		secret = radsec
+	}
+}
+EOF
+
+echo "== starting FreeRADIUS (debug, threaded for RadSec) =="
 docker run -d --rm --name ah-freeradius --network host \
   -v "$work/authorize:/etc/raddb/mods-config/files/authorize:ro" \
-  freeradius/freeradius-server:latest -X >/dev/null
+  -v "$work/radsec:/etc/raddb/sites-enabled/radsec:ro" \
+  freeradius/freeradius-server:latest -fxx -l stdout >/dev/null
 
 # Wait for it to be listening.
-for i in $(seq 1 20); do
+for i in $(seq 1 30); do
   if docker logs ah-freeradius 2>&1 | grep -q "Ready to process requests"; then break; fi
   sleep 0.5
 done
@@ -47,9 +77,9 @@ openssl req -x509 -newkey rsa:2048 -keyout "$work/bad.key" -out "$work/bad.pem" 
   -days 1 -nodes -subj "/CN=untrusted-test" >/dev/null 2>&1 || true
 
 echo
-echo "== correct secret + valid PAP + PEAP-MSCHAPv2 + EAP-TLS + MTU probe (expect PASS) =="
+echo "== correct secret + PAP + PEAP-MSCHAPv2 + EAP-TTLS + EAP-TLS + MTU (expect PASS) =="
 "$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" \
-  --pap 'alice:pw' --peap 'alice:pw' \
+  --pap 'alice:pw' --peap 'alice:pw' --ttls 'alice:pw' \
   --client-cert "$work/cert.pem" --client-key "$work/key.pem" --mtu --no-color || true
 
 echo
@@ -61,6 +91,11 @@ echo "== valid secret, bad password + untrusted client cert (expect FAILs) =="
 "$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" \
   --pap 'alice:nope' --peap 'alice:nope' \
   --client-cert "$work/bad.pem" --client-key "$work/bad.key" --no-color || true
+
+echo
+echo "== RadSec (RADIUS/TLS 2083) with client cert (expect TLS + RADIUS PASS) =="
+"$work/authhound-probe" radsec test --server 127.0.0.1 \
+  --client-cert "$work/cert.pem" --client-key "$work/key.pem" --no-color || true
 
 echo
 echo "== done; tearing down FreeRADIUS =="

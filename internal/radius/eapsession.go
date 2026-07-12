@@ -249,6 +249,21 @@ func (c *eapTLSConn) finishEAPTLS() (Code, error) {
 	return code, err
 }
 
+// exchangeAppData ships TLS application data already buffered by tc.Write (after
+// the handshake) as one EAP application record, and returns the server's outer
+// RADIUS reply code. Used by EAP-TTLS, where the server answers the inner AVPs
+// with an outer Access-Accept/Reject rather than more tunnel data. The inner
+// payload (PAP credentials) is well under one fragment, so no fragmentation is
+// needed here.
+func (c *eapTLSConn) exchangeAppData() (Code, error) {
+	out := c.outBuf
+	c.outBuf = nil
+	data := append([]byte{0}, out...) // EAP-TLS flags = 0, then the TLS record
+	resp := (&EAPPacket{Code: EAPResponse, ID: c.curID, Type: c.eapType, Data: data}).Marshal()
+	_, code, err := c.sess.send(resp)
+	return code, err
+}
+
 // explainTLSError turns a Go TLS handshake error into a cause an admin can act
 // on. Most EAP-TLS failures are the server rejecting the client certificate.
 func explainTLSError(err error) string {
@@ -269,9 +284,11 @@ func explainTLSError(err error) string {
 	case strings.Contains(e, "bad certificate"), strings.Contains(e, "certificate unknown"), strings.Contains(e, "unsupported certificate"), strings.Contains(e, "access denied"):
 		return "the server rejected the client certificate (bad/unsupported/denied). Check that it's a client-auth cert issued by a trusted CA."
 	case strings.Contains(e, "handshake failure"), strings.Contains(e, "protocol version"), strings.Contains(e, "no cipher"):
-		return "TLS handshake failure — the server may not support EAP-TLS here, or there's no common TLS version/cipher."
+		return "TLS handshake failure — the server may not support this method here, or there's no common TLS version/cipher."
+	case strings.Contains(e, "eof"), strings.Contains(e, "connection reset"):
+		return "the server closed the connection during the handshake — commonly it requires a client certificate that wasn't provided or accepted."
 	default:
-		return "EAP-TLS handshake failed: " + err.Error()
+		return "TLS handshake failed: " + err.Error()
 	}
 }
 

@@ -1,0 +1,24 @@
+# A throwaway FreeRADIUS lab for exercising authhound-probe end-to-end:
+# classic RADIUS/UDP (PAP, PEAP-MSCHAPv2, EAP-TTLS, EAP-TLS) on 1812, and
+# RadSec (RADIUS/TLS) on 2083.
+#
+#   docker compose -f test/lab/docker-compose.yml up      # start (Ctrl-C to stop)
+#   docker compose -f test/lab/docker-compose.yml down     # remove
+#
+# Linux only: it uses host networking so the probe reaches it as 127.0.0.1,
+# matching FreeRADIUS's default localhost client and the RadSec client entry.
+# On macOS/Windows, run the probe from inside a container on the same network,
+# or add a client entry for your Docker bridge subnet.
+#
+# `-fxx -l stdout` runs FreeRADIUS in the foreground with debug AND threading —
+# threading is REQUIRED for the RadSec TLS socket ('-X' is single-threaded and
+# refuses to open it). Test certs are generated on first boot; see test/README.md
+# for extracting a client cert for the EAP-TLS / RadSec tests.
+services:
+  freeradius:
+    image: freeradius/freeradius-server:latest
+    command: ["-fxx", "-l", "stdout"]
+    network_mode: host
+    volumes:
+      - ./config/authorize:/etc/raddb/mods-config/files/authorize:ro
+      - ./config/radsec:/etc/raddb/sites-enabled/radsec:ro

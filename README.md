@@ -33,6 +33,7 @@ Like `eapol_test` or `radtest`, but the output is readable — one command, no `
 | **Shared secret** | Cryptographically verifies the server's reply signature. A pass *proves* the secret matches — no more guessing whether "everyone's getting rejected" is a secret problem or something else. |
 | **PAP authentication** | A real login with credentials you supply → Accept or Reject, decoded. Also detects an **MFA/second-factor challenge** and reports it (the probe does not complete push/OTP — see below). |
 | **PEAP-MSCHAPv2** | The method most enterprise 802.1X networks actually run: a real inner authentication inside the PEAP TLS tunnel. Reports success — and verifies the server's own MSCHAPv2 proof (mutual auth) — or the decoded reason on rejection. The "can my users actually log in?" test. |
+| **EAP-TTLS (PAP)** | A real login inside the TTLS tunnel using inner PAP. Because the password is checked in cleartext (safe inside the tunnel), TTLS-PAP works against *any* backend — including hashed stores that MSCHAPv2 can't use. If PEAP-MSCHAPv2 fails but this passes, the directory can't produce an NT hash. |
 | **EAP-TLS** | Certificate-based login (no password): presents a client certificate and reports whether the server accepts it — with a plain-English reason on failure (untrusted CA, expired cert, policy reject). See [EAP-TLS: preparing a client certificate](#eap-tls-preparing-a-client-certificate). |
 | **Server certificate** | Establishes the PEAP/TLS tunnel over RADIUS, captures the server's certificate, and flags **expiry**, an incomplete intermediate chain, and the negotiated TLS version. The "Wi-Fi died overnight" outage, caught early. |
 | **Path MTU / fragmentation** (`--mtu`) | Finds the largest RADIUS packet that survives the round trip. Pinpoints the invisible failure where a firewall or VPN drops large / IP-fragmented UDP, so the multi-kilobyte EAP-TLS certificate flight never arrives and 802.1X silently stalls — while every server-side log looks clean. |
@@ -58,6 +59,9 @@ $ authhound-probe radius test --server radius.corp.com --secret '••••' -
 
 # PAP — VPNs, simple setups, or as a backend baseline
 $ authhound-probe radius test --server radius.corp.com --secret '••••' --pap 'user:password'
+
+# EAP-TTLS with inner PAP — works even against hashed password backends
+$ authhound-probe radius test --server radius.corp.com --secret '••••' --ttls 'user:password'
 
 # EAP-TLS — certificate-based login (see cert prep below)
 $ authhound-probe radius test --server radius.corp.com --secret '••••' \
@@ -91,6 +95,7 @@ $ authhound-probe radsec test --server radius.corp.com \
 | `--secret SECRET` | Shared secret for this probe on the server. **Required.** |
 | `--pap user:pass` | Run a PAP authentication test. |
 | `--peap user:pass` | Run a PEAP-MSCHAPv2 authentication test. |
+| `--ttls user:pass` | Run an EAP-TTLS (inner PAP) authentication test. |
 | `--client-cert FILE` `--client-key FILE` | Run an EAP-TLS test with this client certificate + key (PEM). |
 | `--mtu` | Run the path-MTU / fragmentation probe (sends a few padded packets). |
 | `--nas-port-type wireless\|ethernet\|virtual` | How the probe presents itself, so server policies match (default `wireless`). |
@@ -198,6 +203,18 @@ $ authhound-probe connect <token>
 ```
 
 ...runs these checks on a schedule from every site, remembers the history, alerts you when something changes (a cert nearing expiry, latency creeping up, a new failure signature), and correlates across your whole fleet — so you hear about it before your users do. Join the waitlist at **[authhound.com](https://authhound.com)**.
+
+## Testing
+
+```console
+$ go test ./...                   # unit tests
+$ ./test/freeradius-smoke.sh      # full end-to-end vs a real FreeRADIUS in Docker
+```
+
+There's also a `docker compose` lab (classic RADIUS/UDP + RadSec/TLS) for poking
+at the probe by hand, and instructions for testing against your own server. See
+[test/README.md](test/README.md) — including how to prepare a client certificate
+for the EAP-TLS and RadSec tests.
 
 ## Contributing
 
