@@ -79,6 +79,7 @@ func cmdRadiusTest(args []string) int {
 	server := fs.String("server", "", "RADIUS server host or host:port (default port 1812)")
 	secret := fs.String("secret", "", "shared secret configured for this probe on the server")
 	pap := fs.String("pap", "", "run a PAP auth test with these credentials: user:password")
+	peap := fs.String("peap", "", "run a PEAP-MSCHAPv2 auth test with these credentials: user:password")
 	nasID := fs.String("nas-id", "authhound-probe", "NAS-Identifier to send")
 	nasPortType := fs.String("nas-port-type", "wireless", "NAS-Port-Type: wireless, ethernet, or virtual")
 	serverName := fs.String("server-name", "", "expected server certificate name (TLS SNI); optional")
@@ -115,13 +116,16 @@ func cmdRadiusTest(args []string) int {
 		NASIdentifier: *nasID,
 		NASPortType:   portType,
 	}
-	if *pap != "" {
-		u, p, ok := strings.Cut(*pap, ":")
-		if !ok {
-			fmt.Fprintln(os.Stderr, "error: --pap must be user:password")
-			return 2
-		}
-		target.Username, target.Password = u, p
+
+	papUser, papPass, err := splitCreds(*pap, "--pap")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+	peapUser, peapPass, err := splitCreds(*peap, "--peap")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
 	}
 
 	// Sink: JSON for scripting, text for humans.
@@ -142,7 +146,8 @@ func cmdRadiusTest(args []string) int {
 		Checks: []check.Check{
 			check.Reachability{},
 			check.SharedSecret{},
-			check.PAP{},
+			check.PAP{User: papUser, Pass: papPass},
+			check.PEAPMSCHAPv2{User: peapUser, Pass: peapPass, ServerName: *serverName},
 			check.ServerCert{ServerName: *serverName},
 		},
 	}
@@ -159,6 +164,19 @@ var nasPortTypes = map[string]int{
 	"wireless": radius.NASPortWireless80211,
 	"ethernet": radius.NASPortEthernet,
 	"virtual":  radius.NASPortVirtual,
+}
+
+// splitCreds parses a "user:password" flag value. Empty is allowed (the check
+// is skipped). A password may contain colons; only the first splits.
+func splitCreds(v, flagName string) (user, pass string, err error) {
+	if v == "" {
+		return "", "", nil
+	}
+	u, p, ok := strings.Cut(v, ":")
+	if !ok || u == "" {
+		return "", "", fmt.Errorf("%s must be user:password", flagName)
+	}
+	return u, p, nil
 }
 
 func cmdConnect() {

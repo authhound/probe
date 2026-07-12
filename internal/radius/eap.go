@@ -21,6 +21,7 @@ const (
 	EAPTypeTTLS     byte = 21
 	EAPTypePEAP     byte = 25
 	EAPTypeMSCHAPv2 byte = 26
+	EAPTypeTLV      byte = 33 // PEAP Result-TLV (extensions)
 )
 
 // EAP-TLS/PEAP flags (RFC 5216 §3.1). The same framing carries TLS records for

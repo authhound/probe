@@ -37,9 +37,11 @@ type Result struct {
 	Duration time.Duration     `json:"duration_ns,omitempty"`
 }
 
-// Target holds everything a check needs to talk to one RADIUS server. It is
-// assembled from local config/flags (v1) or, later, delivered inside a signed
-// plan from the cloud (premium) — but the Check code never knows which.
+// Target holds the connection info for one RADIUS server — everything a check
+// needs to reach it. Credentials live on the individual auth checks (PAP, PEAP,
+// …), not here, so different methods can test different accounts and future
+// protocols carry their own auth shape. Assembled from local config/flags (v1)
+// or, later, a signed plan from the cloud (premium) — the Check never knows which.
 type Target struct {
 	Address       string // host:port
 	Secret        string
@@ -51,10 +53,6 @@ type Target struct {
 	NASPortType    int // radius.NASPort* value; 0 = omit
 	CalledStation  string
 	CallingStation string
-
-	// Credentials for auth checks; empty means "skip that check".
-	Username string
-	Password string
 }
 
 // Check is one diagnostic. Implementations must be read-only and must not

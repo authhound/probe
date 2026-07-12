@@ -173,19 +173,14 @@ func TestPAPAcceptAndReject(t *testing.T) {
 	addr := startFakeServer(t, &fakeServer{secret: "s3cret", goodUser: "alice", goodPass: "pw"})
 	ctx := context.Background()
 
-	good := target(addr, "s3cret")
-	good.Username, good.Password = "alice", "pw"
-	if r := (PAP{}).Run(ctx, good); r.Status != StatusPass {
+	tgt := target(addr, "s3cret")
+	if r := (PAP{User: "alice", Pass: "pw"}).Run(ctx, tgt); r.Status != StatusPass {
 		t.Errorf("pap accept: got %s (%s), want pass", r.Status, r.Summary)
 	}
-
-	bad := target(addr, "s3cret")
-	bad.Username, bad.Password = "alice", "wrong"
-	if r := (PAP{}).Run(ctx, bad); r.Status != StatusFail {
+	if r := (PAP{User: "alice", Pass: "wrong"}).Run(ctx, tgt); r.Status != StatusFail {
 		t.Errorf("pap reject: got %s (%s), want fail", r.Status, r.Summary)
 	}
-
-	if r := (PAP{}).Run(ctx, target(addr, "s3cret")); r.Status != StatusSkip {
+	if r := (PAP{}).Run(ctx, tgt); r.Status != StatusSkip {
 		t.Errorf("pap no-creds: got %s, want skip", r.Status)
 	}
 }

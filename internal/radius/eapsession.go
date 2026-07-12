@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -111,6 +113,28 @@ type CapturedCert struct {
 
 var errCertCaptured = errors.New("certificate captured")
 
+// tlsConfig builds the PEAP outer-tunnel TLS config. The server certificate is
+// always captured for reporting. When abort is true, the handshake stops right
+// after the certificate is received (used by the read-only cert check); when
+// false, the handshake completes so inner authentication can run.
+func (s *EAPSession) tlsConfig(serverName string, captured *CapturedCert, abort bool) *tls.Config {
+	return &tls.Config{
+		InsecureSkipVerify: true, // we inspect the cert ourselves; trust is a separate check
+		MinVersion:         tls.VersionTLS10,
+		MaxVersion:         tls.VersionTLS12, // EAP servers overwhelmingly speak <=1.2
+		ServerName:         serverName,
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			captured.Chain = cs.PeerCertificates
+			captured.TLSVersion = cs.Version
+			captured.CipherSuite = cs.CipherSuite
+			if abort {
+				return errCertCaptured
+			}
+			return nil
+		},
+	}
+}
+
 // InspectServerCert establishes the PEAP outer TLS tunnel far enough to receive
 // and record the RADIUS server's certificate chain, then aborts (it never sends
 // inner credentials or a client certificate). serverName sets SNI; empty is
@@ -120,22 +144,9 @@ func (s *EAPSession) InspectServerCert(ctx context.Context, serverName string) (
 	if err != nil {
 		return nil, err
 	}
-
 	conn := &eapTLSConn{sess: s, eapType: EAPTypePEAP, curID: start.ID, fragSize: 1024}
 	captured := &CapturedCert{}
-	conf := &tls.Config{
-		InsecureSkipVerify: true, // we inspect the cert ourselves; we are not authenticating
-		MinVersion:         tls.VersionTLS10,
-		MaxVersion:         tls.VersionTLS12, // EAP servers overwhelmingly speak <=1.2
-		ServerName:         serverName,
-		VerifyConnection: func(cs tls.ConnectionState) error {
-			captured.Chain = cs.PeerCertificates
-			captured.TLSVersion = cs.Version
-			captured.CipherSuite = cs.CipherSuite
-			return errCertCaptured // stop before we'd send a client cert
-		},
-	}
-	tc := tls.Client(conn, conf)
+	tc := tls.Client(conn, s.tlsConfig(serverName, captured, true))
 	hsErr := tc.HandshakeContext(ctx)
 	if len(captured.Chain) > 0 {
 		return captured, nil
@@ -144,6 +155,173 @@ func (s *EAPSession) InspectServerCert(ctx context.Context, serverName string) (
 		return nil, fmt.Errorf("TLS handshake did not yield a certificate: %w", hsErr)
 	}
 	return nil, errors.New("no certificate presented by server")
+}
+
+// PEAPResult reports the outcome of a PEAP-MSCHAPv2 authentication attempt.
+type PEAPResult struct {
+	Success      bool
+	ServerProved bool // the server's MSCHAPv2 authenticator response verified
+	ErrorCode    int  // MSCHAPv2 error code on failure (e.g. 691), else 0
+	ErrorCause   string
+	Cert         *CapturedCert
+}
+
+// AuthPEAPMSCHAPv2 completes the PEAP tunnel and runs a real inner EAP-MSCHAPv2
+// authentication with the given credentials. It reports success/failure, decodes
+// the MSCHAPv2 error code on rejection, and verifies the server's authenticator
+// response (mutual proof). The password is used only to build the response and
+// is never transmitted or logged.
+func (s *EAPSession) AuthPEAPMSCHAPv2(ctx context.Context, userName, password, serverName string) (*PEAPResult, error) {
+	start, err := s.startTunnel(EAPTypePEAP)
+	if err != nil {
+		return nil, err
+	}
+	conn := &eapTLSConn{sess: s, eapType: EAPTypePEAP, curID: start.ID, fragSize: 1024}
+	captured := &CapturedCert{}
+	tc := tls.Client(conn, s.tlsConfig(serverName, captured, false))
+	if err := tc.HandshakeContext(ctx); err != nil {
+		return nil, fmt.Errorf("PEAP tunnel handshake failed: %w", err)
+	}
+	res, err := runInnerMSCHAPv2(tc, userName, password)
+	if err != nil {
+		return nil, err
+	}
+	res.Cert = captured
+	return res, nil
+}
+
+// runInnerMSCHAPv2 drives the inner EAP-MSCHAPv2 exchange inside the completed
+// PEAP TLS tunnel (tc).
+//
+// PEAPv0 (the near-universal Microsoft variant, and FreeRADIUS's default) carries
+// inner EAP packets HEADER-STRIPPED: the tunnel bytes are [EAP-Type, type-data],
+// with the outer EAP Code/Identifier/Length omitted (PEAP reconstructs them).
+// So we read/write inner packets as (type, data) pairs, one per TLS record.
+func runInnerMSCHAPv2(tc innerConn, userName, password string) (*PEAPResult, error) {
+	typ, data, err := readInner(tc)
+	if err != nil {
+		return nil, fmt.Errorf("reading first inner EAP request: %w", err)
+	}
+	dbg("inner req#1 type=%d datalen=%d raw=%x", typ, len(data), append([]byte{typ}, data...))
+
+	// The server begins with an inner EAP-Identity request.
+	if typ == EAPTypeIdentity {
+		if err := writeInner(tc, EAPTypeIdentity, []byte(userName)); err != nil {
+			return nil, err
+		}
+		typ, data, err = readInner(tc)
+		if err != nil {
+			return nil, fmt.Errorf("reading inner MSCHAPv2 challenge: %w", err)
+		}
+	}
+	dbg("inner challenge type=%d datalen=%d", typ, len(data))
+	if typ != EAPTypeMSCHAPv2 || len(data) < 1 || data[0] != 1 {
+		return nil, fmt.Errorf("expected inner MSCHAPv2 Challenge, got EAP type %d", typ)
+	}
+	// MSCHAPv2 Challenge type-data: OpCode(1) ID(1) MS-Length(2) ValueSize(1) Challenge(16) Name...
+	if len(data) < 5+16 || data[4] != 16 {
+		return nil, errors.New("malformed MSCHAPv2 challenge")
+	}
+	msChapID := data[1]
+	var authChallenge [16]byte
+	copy(authChallenge[:], data[5:21])
+
+	peer, err := NewPeerChallenge()
+	if err != nil {
+		return nil, err
+	}
+	ntResponse := GenerateNTResponse(authChallenge, peer, userName, password)
+	if err := writeInner(tc, EAPTypeMSCHAPv2, buildMSCHAPResponse(msChapID, peer, ntResponse, userName)); err != nil {
+		return nil, err
+	}
+
+	// The server now signals the outcome, either as an MSCHAPv2 Success/Failure
+	// (with a decodable E=code) or straight as a PEAP Result-TLV. Loop over a few
+	// packets so we handle whichever order a server uses (FreeRADIUS sends the
+	// Result-TLV directly on failure; MSCHAPv2 Success then TLV on success).
+	res := &PEAPResult{}
+	for i := 0; i < 4; i++ {
+		typ, data, err = readInner(tc)
+		if err != nil {
+			if res.ErrorCode != 0 || res.Success {
+				return res, nil // we already have a verdict; a torn-down tail is fine
+			}
+			return nil, fmt.Errorf("reading MSCHAPv2 result: %w", err)
+		}
+		dbg("inner result type=%d datalen=%d", typ, len(data))
+
+		switch {
+		case typ == EAPTypeMSCHAPv2 && len(data) >= 1 && data[0] == 3: // Success
+			want := GenerateAuthenticatorResponse(authChallenge, peer, ntResponse, userName, password)
+			res.Success = true
+			res.ServerProved = strings.Contains(string(data[1:]), want)
+			_ = writeInner(tc, EAPTypeMSCHAPv2, []byte{3})
+			return res, nil
+
+		case typ == EAPTypeMSCHAPv2 && len(data) >= 1 && data[0] == 4: // Failure
+			res.ErrorCode, res.ErrorCause = DecodeMSCHAPError(string(data[1:]))
+			_ = writeInner(tc, EAPTypeMSCHAPv2, []byte{4})
+			// keep looping for the Result-TLV that confirms the failure
+
+		case typ == EAPTypeTLV: // PEAP Result-TLV — authoritative
+			success := len(data) >= 6 && data[5] == 1
+			_ = writeInner(tc, EAPTypeTLV, data) // echo the result TLV
+			if success {
+				res.Success = true
+				return res, nil
+			}
+			res.Success = false
+			if res.ErrorCause == "" {
+				res.ErrorCause = "the server rejected the credentials — wrong password, or the account is disabled, expired, or otherwise not permitted."
+			}
+			return res, nil
+		}
+	}
+	if res.ErrorCode != 0 {
+		return res, nil
+	}
+	return nil, errors.New("no PEAP result after the MSCHAPv2 response")
+}
+
+// innerConn is the subset of net.Conn / tls.Conn that the inner exchange needs.
+type innerConn interface {
+	Read([]byte) (int, error)
+	Write([]byte) (int, error)
+}
+
+// readInner reads one header-stripped inner EAP packet (one TLS record) and
+// returns its EAP type and type-data.
+// readInner reads one inner EAP packet (one TLS record) and returns its EAP
+// type and type-data. PEAPv0 mixes two framings: the inner method (MSCHAPv2) is
+// header-stripped ([type, data]), while EAP-Identity and the Result-TLV arrive
+// with a full EAP header ([code, id, len, len, type, data]). We detect a full
+// header when byte 0 is a valid EAP code (1–4) and the length field matches the
+// record — an MSCHAPv2 packet starts with 0x1a (26), which never collides.
+func readInner(c innerConn) (typ byte, data []byte, err error) {
+	buf := make([]byte, 4096)
+	n, err := c.Read(buf)
+	if err != nil && n == 0 {
+		return 0, nil, err
+	}
+	if n < 1 {
+		return 0, nil, errors.New("empty inner EAP record")
+	}
+	dbg("readInner n=%d raw=%x", n, buf[:n])
+	if n >= 5 && buf[0] >= 1 && buf[0] <= 4 {
+		if length := int(buf[2])<<8 | int(buf[3]); length == n {
+			return buf[4], append([]byte(nil), buf[5:n]...), nil // full EAP header
+		}
+	}
+	return buf[0], append([]byte(nil), buf[1:n]...), nil // header-stripped
+}
+
+// writeInner sends one header-stripped inner EAP packet (type + data).
+func writeInner(c innerConn, typ byte, data []byte) error {
+	pkt := make([]byte, 0, 1+len(data))
+	pkt = append(pkt, typ)
+	pkt = append(pkt, data...)
+	_, err := c.Write(pkt)
+	return err
 }
 
 // eapTLSConn adapts the half-duplex EAP-TLS transport to net.Conn so crypto/tls
@@ -279,3 +457,10 @@ type netAddr struct{}
 
 func (netAddr) Network() string { return "eap-radius" }
 func (netAddr) String() string  { return "eap-radius" }
+
+// dbg prints EAP debug lines when AHPROBE_DEBUG is set (development only).
+func dbg(format string, args ...any) {
+	if os.Getenv("AHPROBE_DEBUG") != "" {
+		fmt.Fprintf(os.Stderr, "[eap] "+format+"\n", args...)
+	}
+}

@@ -15,12 +15,15 @@ import (
 // directory works but PEAP/EAP-TLS fails for real users, the problem is in the
 // TLS/EAP layer, not reachability, secrets, or the backend password store —
 // exactly the kind of hop-isolation the paid product automates.
-type PAP struct{}
+type PAP struct {
+	User string
+	Pass string
+}
 
 func (PAP) Name() string { return "pap-auth" }
 
-func (PAP) Run(ctx context.Context, t Target) Result {
-	if t.Username == "" {
+func (c PAP) Run(ctx context.Context, t Target) Result {
+	if c.User == "" {
 		return Result{
 			Check: "pap-auth", Status: StatusSkip,
 			Summary: "No credentials supplied — skipped (pass --pap user:pass to run it)",
@@ -31,8 +34,8 @@ func (PAP) Run(ctx context.Context, t Target) Result {
 	if err != nil {
 		return Result{Check: "pap-auth", Status: StatusFail, Summary: "internal error: " + err.Error()}
 	}
-	p.AddString(radius.AttrUserName, t.Username)
-	p.SetUserPassword(t.Password, t.Secret)
+	p.AddString(radius.AttrUserName, c.User)
+	p.SetUserPassword(c.Pass, t.Secret)
 	addCommon(p, t)
 
 	reply, _, _, err := radius.Exchange(t.Address, t.Secret, p, t.Timeout)
@@ -45,11 +48,11 @@ func (PAP) Run(ctx context.Context, t Target) Result {
 
 	switch reply.Code {
 	case radius.AccessAccept:
-		return Result{Check: "pap-auth", Status: StatusPass, Summary: "PAP authentication accepted for " + t.Username}
+		return Result{Check: "pap-auth", Status: StatusPass, Summary: "PAP authentication accepted for " + c.User}
 	case radius.AccessReject:
 		return Result{
 			Check: "pap-auth", Status: StatusFail,
-			Summary: "PAP authentication rejected for " + t.Username,
+			Summary: "PAP authentication rejected for " + c.User,
 			Detail: "The server processed the login and said no. Causes: wrong password; " +
 				"the account can't be checked via PAP (e.g. the backend only stores an " +
 				"NT hash); or a network policy denies this user. If PEAP works but PAP " +
