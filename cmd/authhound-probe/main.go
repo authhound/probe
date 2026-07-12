@@ -1,12 +1,14 @@
-// Command authhound-probe runs outside-in RADIUS diagnostics from inside your
-// network. In v1 it runs one-shot, locally, with no account and no cloud —
-// everything you paste stays on this host.
+// Command authhound-probe runs outside-in authentication diagnostics from
+// inside your network. In v1 it runs one-shot, locally, with no account and no
+// cloud — everything you enter stays on this host.
 //
-//	authhound-probe test --server radius.corp.com --secret '***' \
+//	authhound-probe radius test --server radius.corp.com --secret '***' \
 //	    --pap 'alice:***'
 //
-// `connect` (premium) turns the same binary into a continuous probe reporting
-// to AuthHound's monitoring service — see https://authhound.com.
+// The protocol is a subcommand namespace (`radius` today; `ldap`, `sso` planned)
+// so the same single agent grows to cover more auth backends. `connect`
+// (premium) turns the same binary into a continuous probe reporting to
+// AuthHound's monitoring service — see https://authhound.com.
 package main
 
 import (
@@ -30,8 +32,8 @@ func main() {
 		os.Exit(2)
 	}
 	switch os.Args[1] {
-	case "test":
-		os.Exit(cmdTest(os.Args[2:]))
+	case "radius":
+		os.Exit(cmdRadius(os.Args[2:]))
 	case "connect":
 		cmdConnect()
 	case "version", "-v", "--version":
@@ -45,8 +47,35 @@ func main() {
 	}
 }
 
-func cmdTest(args []string) int {
-	fs := flag.NewFlagSet("test", flag.ExitOnError)
+// cmdRadius dispatches the RADIUS protocol subcommands. Future protocols
+// (`ldap`, `sso`) get their own top-level command alongside this one.
+func cmdRadius(args []string) int {
+	if len(args) < 1 {
+		radiusUsage()
+		return 2
+	}
+	switch args[0] {
+	case "test":
+		return cmdRadiusTest(args[1:])
+	case "help", "-h", "--help":
+		radiusUsage()
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "unknown radius subcommand %q\n\n", args[0])
+		radiusUsage()
+		return 2
+	}
+}
+
+func radiusUsage() {
+	fmt.Fprintln(os.Stderr, `Usage: authhound-probe radius test --server HOST --secret SECRET [--pap user:pass]
+
+Runs local, read-only RADIUS/802.1X checks. Nothing leaves this host.
+Run 'authhound-probe radius test --help' for all flags.`)
+}
+
+func cmdRadiusTest(args []string) int {
+	fs := flag.NewFlagSet("radius test", flag.ExitOnError)
 	server := fs.String("server", "", "RADIUS server host or host:port (default port 1812)")
 	secret := fs.String("secret", "", "shared secret configured for this probe on the server")
 	pap := fs.String("pap", "", "run a PAP auth test with these credentials: user:password")
@@ -57,8 +86,8 @@ func cmdTest(args []string) int {
 	jsonOut := fs.Bool("json", false, "emit results as JSON instead of text")
 	noColor := fs.Bool("no-color", false, "disable ANSI colour")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: authhound-probe test --server HOST --secret SECRET [--pap user:pass]")
-		fmt.Fprint(os.Stderr, "\nRuns local, read-only RADIUS checks. Nothing leaves this host.\n\nFlags:\n")
+		fmt.Fprintln(os.Stderr, "Usage: authhound-probe radius test --server HOST --secret SECRET [--pap user:pass]")
+		fmt.Fprint(os.Stderr, "\nRuns local, read-only RADIUS/802.1X checks. Nothing leaves this host.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args)
@@ -140,13 +169,14 @@ func cmdConnect() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `authhound-probe — outside-in RADIUS diagnostics, run from inside your network
+	fmt.Fprintln(os.Stderr, `authhound-probe — outside-in auth diagnostics, run from inside your network
 
 Usage:
-  authhound-probe test --server HOST --secret SECRET [--pap user:pass]
-  authhound-probe connect        (premium: continuous monitoring)
+  authhound-probe radius test --server HOST --secret SECRET [--pap user:pass]
+  authhound-probe connect             (premium: continuous monitoring)
   authhound-probe version
 
-'test' runs once, locally, with no account. Nothing you enter leaves this host.
+'radius test' runs once, locally, with no account — nothing you enter leaves
+this host. More protocols (ldap, sso) are planned as sibling commands.
 Full docs: https://authhound.com`)
 }

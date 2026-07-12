@@ -11,7 +11,7 @@ A RADIUS server only logs the requests that *reach* it. A huge class of 802.1X f
 `authhound-probe` runs a **real** authentication against your RADIUS server from **inside your network**, acting as a NAS (switch/AP) would, and tells you in plain English which hop is broken. Works with self-hosted **FreeRADIUS** and **Windows NPS**, and with cloud RADIUS (**JumpCloud, Foxpass, SecureW2, Okta**). No account, no signup, no telemetry — everything you type stays on the host you run it on.
 
 ```console
-$ authhound-probe test --server radius.corp.com --secret '••••' --pap 'alice:••••'
+$ authhound-probe radius test --server radius.corp.com --secret '••••' --pap 'alice:••••'
 
 Testing RADIUS server radius.corp.com:1812 (as NAS "authhound-probe")
 
@@ -46,7 +46,7 @@ If the server issues an MFA challenge after valid primary credentials, the probe
 
 ```console
 $ curl -sSL https://github.com/authhound/probe/releases/latest/download/authhound-probe_linux_amd64.tar.gz | tar xz
-$ ./authhound-probe test --server ... --secret ...
+$ ./authhound-probe radius test --server ... --secret ...
 ```
 
 **Go:**
@@ -58,7 +58,7 @@ $ go install github.com/authhound/probe/cmd/authhound-probe@latest
 **Docker:**
 
 ```console
-$ docker run --rm authhound/probe test --server radius.corp.com --secret '••••'
+$ docker run --rm authhound/probe radius test --server radius.corp.com --secret '••••'
 ```
 
 ## Where to run it
@@ -105,7 +105,7 @@ Built to be safe to run against production, and to pass an enterprise security r
 
 ## From spot-check to continuous monitoring
 
-`authhound-probe test` answers "is it working **right now**?" But the failures that hurt most are the *intermittent* ones — the 3 a.m. blip, the cert that expires next Tuesday, the drift that only shows up under load. You can't catch those by running a command when you happen to suspect trouble.
+`authhound-probe radius test` answers "is it working **right now**?" But the failures that hurt most are the *intermittent* ones — the 3 a.m. blip, the cert that expires next Tuesday, the drift that only shows up under load. You can't catch those by running a command when you happen to suspect trouble.
 
 That's what the paid tier is for. The **same binary**, pointed at the AuthHound service:
 

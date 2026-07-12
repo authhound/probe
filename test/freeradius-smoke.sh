@@ -37,15 +37,15 @@ go build -o "$work/authhound-probe" ./cmd/authhound-probe
 
 echo
 echo "== correct secret + valid creds (expect all PASS) =="
-"$work/authhound-probe" test --server 127.0.0.1 --secret "$SECRET" --pap 'alice:pw' --no-color || true
+"$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" --pap 'alice:pw' --no-color || true
 
 echo
 echo "== wrong secret (expect shared-secret FAIL or no verify) =="
-"$work/authhound-probe" test --server 127.0.0.1 --secret "wrongsecret" --no-color || true
+"$work/authhound-probe" radius test --server 127.0.0.1 --secret "wrongsecret" --no-color || true
 
 echo
 echo "== valid secret, bad password (expect PAP FAIL) =="
-"$work/authhound-probe" test --server 127.0.0.1 --secret "$SECRET" --pap 'alice:nope' --no-color || true
+"$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" --pap 'alice:nope' --no-color || true
 
 echo
 echo "== done; tearing down FreeRADIUS =="
