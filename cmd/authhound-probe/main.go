@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/authhound/probe/internal/check"
+	"github.com/authhound/probe/internal/credential"
 	"github.com/authhound/probe/internal/radius"
 	"github.com/authhound/probe/internal/report"
 )
@@ -176,10 +177,13 @@ func cmdRadsecTest(args []string) int {
 func cmdRadiusTest(args []string) int {
 	fs := flag.NewFlagSet("radius test", flag.ExitOnError)
 	server := fs.String("server", "", "RADIUS server host or host:port (default port 1812)")
-	secret := fs.String("secret", "", "shared secret configured for this probe on the server")
-	pap := fs.String("pap", "", "run a PAP auth test with these credentials: user:password")
-	peap := fs.String("peap", "", "run a PEAP-MSCHAPv2 auth test with these credentials: user:password")
-	ttls := fs.String("ttls", "", "run an EAP-TTLS (inner PAP) auth test with these credentials: user:password")
+	secret := fs.String("secret", "", "shared secret (leaks into shell history/ps — prefer AUTHHOUND_SECRET, --secret-file, or the prompt)")
+	secretFile := fs.String("secret-file", "", "read the shared secret from this file (must not be world-readable on unix)")
+	secretStdin := fs.Bool("secret-stdin", false, "read the shared secret from standard input (one line)")
+	passwordFile := fs.String("password-file", "", "read the auth password from this file, for any --pap/--peap/--ttls given as just 'user'")
+	pap := fs.String("pap", "", "run a PAP auth test as 'user:password', or just 'user' to be prompted for the password")
+	peap := fs.String("peap", "", "run a PEAP-MSCHAPv2 auth test as 'user:password', or just 'user' to be prompted")
+	ttls := fs.String("ttls", "", "run an EAP-TTLS (inner PAP) auth test as 'user:password', or just 'user' to be prompted")
 	clientCert := fs.String("client-cert", "", "client certificate (PEM) for an EAP-TLS auth test")
 	clientKey := fs.String("client-key", "", "client private key (PEM) for the EAP-TLS test")
 	nasID := fs.String("nas-id", "authhound-probe", "NAS-Identifier to send")
@@ -196,11 +200,13 @@ func cmdRadiusTest(args []string) int {
 	}
 	_ = fs.Parse(args)
 
-	if *server == "" || *secret == "" {
-		fmt.Fprint(os.Stderr, "error: --server and --secret are required\n\n")
+	if *server == "" {
+		fmt.Fprint(os.Stderr, "error: --server is required\n\n")
 		fs.Usage()
 		return 2
 	}
+	provided := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { provided[f.Name] = true })
 	addr := *server
 	if !strings.Contains(addr, ":") {
 		addr += ":1812"
@@ -212,25 +218,41 @@ func cmdRadiusTest(args []string) int {
 		return 2
 	}
 
+	prompter := credential.Default()
+	secretValue, err := prompter.Resolve(credential.Spec{
+		Name:      "shared secret",
+		Inline:    *secret,
+		InlineSet: provided["secret"],
+		File:      *secretFile,
+		Stdin:     *secretStdin,
+		EnvVar:    "AUTHHOUND_SECRET",
+		Required:  true,
+		Exclusive: true,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+
 	target := check.Target{
 		Address:       addr,
-		Secret:        *secret,
+		Secret:        secretValue,
 		Timeout:       *timeout,
 		NASIdentifier: *nasID,
 		NASPortType:   portType,
 	}
 
-	papUser, papPass, err := splitCreds(*pap, "--pap")
+	papUser, papPass, err := resolveCreds(prompter, *pap, "--pap", *passwordFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}
-	peapUser, peapPass, err := splitCreds(*peap, "--peap")
+	peapUser, peapPass, err := resolveCreds(prompter, *peap, "--peap", *passwordFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}
-	ttlsUser, ttlsPass, err := splitCreds(*ttls, "--ttls")
+	ttlsUser, ttlsPass, err := resolveCreds(prompter, *ttls, "--ttls", *passwordFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
@@ -281,17 +303,32 @@ var nasPortTypes = map[string]int{
 	"virtual":  radius.NASPortVirtual,
 }
 
-// splitCreds parses a "user:password" flag value. Empty is allowed (the check
-// is skipped). A password may contain colons; only the first splits.
-func splitCreds(v, flagName string) (user, pass string, err error) {
+// resolveCreds parses a "user[:password]" flag value and resolves the password
+// without ever requiring it on the command line. Empty means the check is
+// skipped. "user:password" uses the inline password (with a TTY warning, since
+// it leaks into history/ps); a bare "user" resolves the password from
+// --password-file, AUTHHOUND_PASSWORD, or an interactive prompt. A password may
+// contain colons; only the first colon splits.
+func resolveCreds(p credential.Prompter, v, flagName, passwordFile string) (user, pass string, err error) {
 	if v == "" {
 		return "", "", nil
 	}
-	u, p, ok := strings.Cut(v, ":")
-	if !ok || u == "" {
-		return "", "", fmt.Errorf("%s must be user:password", flagName)
+	u, inlinePass, hasColon := strings.Cut(v, ":")
+	if u == "" {
+		return "", "", fmt.Errorf("%s must be user or user:password", flagName)
 	}
-	return u, p, nil
+	pass, err = p.Resolve(credential.Spec{
+		Name:      "password for " + u,
+		Inline:    inlinePass,
+		InlineSet: hasColon,
+		File:      passwordFile,
+		EnvVar:    "AUTHHOUND_PASSWORD",
+		Required:  true,
+	})
+	if err != nil {
+		return "", "", err
+	}
+	return u, pass, nil
 }
 
 func cmdConnect() {

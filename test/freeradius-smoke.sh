@@ -83,6 +83,14 @@ echo "== correct secret + PAP + PEAP-MSCHAPv2 + EAP-TTLS + EAP-TLS + MTU (expect
   --client-cert "$work/cert.pem" --client-key "$work/key.pem" --mtu --no-color || true
 
 echo
+echo "== same, but secret via AUTHHOUND_SECRET + password via --password-file (expect PASS) =="
+# Exercises the credential paths that keep secrets off the command line: the
+# shared secret from the environment and the password from a chmod-600 file.
+printf '%s' "pw" > "$work/pw.txt"; chmod 600 "$work/pw.txt"
+AUTHHOUND_SECRET="$SECRET" "$work/authhound-probe" radius test --server 127.0.0.1 \
+  --pap 'alice' --password-file "$work/pw.txt" --no-color || true
+
+echo
 echo "== wrong secret (expect shared-secret FAIL or no verify) =="
 "$work/authhound-probe" radius test --server 127.0.0.1 --secret "wrongsecret" --no-color || true
 

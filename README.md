@@ -11,7 +11,9 @@ A RADIUS server only logs the requests that *reach* it. A huge class of 802.1X f
 `authhound-probe` runs a **real** authentication against your RADIUS server from **inside your network**, acting as a NAS (switch/AP) would, and tells you in plain English which hop is broken. Works with self-hosted **FreeRADIUS** and **Windows NPS**, and with hosted/cloud RADIUS services. No account, no signup, no telemetry — everything you type stays on the host you run it on.
 
 ```console
-$ authhound-probe radius test --server radius.corp.com --secret '••••' --peap 'alice:••••'
+$ export AUTHHOUND_SECRET='shared-secret'   # kept out of shell history and `ps`
+$ authhound-probe radius test --server radius.corp.com --peap alice
+Enter password for alice:
 
 Testing RADIUS server radius.corp.com:1812 (as NAS "authhound-probe")
 
@@ -45,35 +47,55 @@ If the server issues an MFA challenge after valid primary credentials, the probe
 
 ## Usage
 
-Reachability, shared-secret, and server-certificate checks run automatically — no credentials needed:
+The shared secret and any password are read from the environment, a file, or an
+interactive prompt — never required on the command line, where they would land in
+your shell history and be visible to every user on the box via `ps`. See
+[Where credentials come from](#where-credentials-come-from) for all the options.
+The examples below use the environment variable and prompt forms.
+
+Reachability, shared-secret, and server-certificate checks run automatically — no
+login credentials needed:
 
 ```console
-$ authhound-probe radius test --server radius.corp.com --secret '••••'
+$ export AUTHHOUND_SECRET='shared-secret'
+$ authhound-probe radius test --server radius.corp.com
 ```
 
-Add an authentication test with the method your network actually uses:
+Add an authentication test with the method your network actually uses. Give
+`--pap/--peap/--ttls` as just the username and you'll be prompted (no echo) for
+the password:
 
 ```console
+$ export AUTHHOUND_SECRET='shared-secret'
+
 # PEAP-MSCHAPv2 — what most enterprise Wi-Fi / 802.1X runs
-$ authhound-probe radius test --server radius.corp.com --secret '••••' --peap 'user:password'
+$ authhound-probe radius test --server radius.corp.com --peap alice
 
 # PAP — VPNs, simple setups, or as a backend baseline
-$ authhound-probe radius test --server radius.corp.com --secret '••••' --pap 'user:password'
+$ authhound-probe radius test --server radius.corp.com --pap alice
 
 # EAP-TTLS with inner PAP — works even against hashed password backends
-$ authhound-probe radius test --server radius.corp.com --secret '••••' --ttls 'user:password'
+$ authhound-probe radius test --server radius.corp.com --ttls alice
 
-# EAP-TLS — certificate-based login (see cert prep below)
-$ authhound-probe radius test --server radius.corp.com --secret '••••' \
+# EAP-TLS — certificate-based login (see cert prep below), no password
+$ authhound-probe radius test --server radius.corp.com \
     --client-cert client.pem --client-key client.key
 
 # add the path-MTU / fragmentation probe (troubleshooting EAP-TLS stalls)
-$ authhound-probe radius test --server radius.corp.com --secret '••••' --mtu
+$ authhound-probe radius test --server radius.corp.com --mtu
 
-# several at once
-$ authhound-probe radius test --server radius.corp.com --secret '••••' \
-    --pap 'user:password' --peap 'user:password' \
+# several at once — prompted once per method
+$ authhound-probe radius test --server radius.corp.com \
+    --pap alice --peap alice \
     --client-cert client.pem --client-key client.key --mtu
+```
+
+For non-interactive use (RMM, cron), supply the password without a prompt via
+`AUTHHOUND_PASSWORD` or `--password-file`:
+
+```console
+$ AUTHHOUND_SECRET='shared-secret' AUTHHOUND_PASSWORD='pw' \
+    authhound-probe radius test --server radius.corp.com --peap alice --json
 ```
 
 **RadSec** (RADIUS/TLS on TCP/2083) is a separate subcommand — it checks
@@ -92,10 +114,13 @@ $ authhound-probe radsec test --server radius.corp.com \
 | Flag | Purpose |
 |---|---|
 | `--server HOST[:port]` | RADIUS server (default port 1812). **Required.** |
-| `--secret SECRET` | Shared secret for this probe on the server. **Required.** |
-| `--pap user:pass` | Run a PAP authentication test. |
-| `--peap user:pass` | Run a PEAP-MSCHAPv2 authentication test. |
-| `--ttls user:pass` | Run an EAP-TTLS (inner PAP) authentication test. |
+| `--secret SECRET` | Shared secret (**required**, but prefer `AUTHHOUND_SECRET` / `--secret-file` / `--secret-stdin` — see [below](#where-credentials-come-from)). |
+| `--secret-file FILE` | Read the shared secret from a file (must not be world-readable on unix). |
+| `--secret-stdin` | Read the shared secret from standard input (one line). |
+| `--pap user[:pass]` | Run a PAP test. Give just `user` to be prompted for the password. |
+| `--peap user[:pass]` | Run a PEAP-MSCHAPv2 test. Give just `user` to be prompted. |
+| `--ttls user[:pass]` | Run an EAP-TTLS (inner PAP) test. Give just `user` to be prompted. |
+| `--password-file FILE` | Password for a `user`-only `--pap/--peap/--ttls`, from a file (non-interactive). |
 | `--client-cert FILE` `--client-key FILE` | Run an EAP-TLS test with this client certificate + key (PEM). |
 | `--mtu` | Run the path-MTU / fragmentation probe (sends a few padded packets). |
 | `--nas-port-type wireless\|ethernet\|virtual` | How the probe presents itself, so server policies match (default `wireless`). |
@@ -104,6 +129,44 @@ $ authhound-probe radsec test --server radius.corp.com \
 | `--timeout DURATION` | Per-request timeout (default `5s`). |
 | `--json` | Machine-readable output for scripts / RMM. |
 | `--no-color` | Disable ANSI colour. |
+
+### Where credentials come from
+
+This tool is meant to run on shared jump boxes, so it never *requires* a secret or
+password on the command line — where it would be saved to `~/.bash_history` and
+shown to any other user on the host by `ps -ef`. The shared secret and each auth
+password can come from any of these, checked in this order (**first match wins**):
+
+| Source | Shared secret | Password |
+|---|---|---|
+| Explicit flag file | `--secret-file FILE` | `--password-file FILE` |
+| Standard input | `--secret-stdin` | *(pipe the secret; give the password another way)* |
+| Inline on the command line | `--secret VALUE` | `--pap user:pass` (and `--peap`, `--ttls`) |
+| Environment variable | `AUTHHOUND_SECRET` | `AUTHHOUND_PASSWORD` |
+| Interactive prompt (no echo) | when stdin is a terminal and no source above is set | give `--pap/--peap/--ttls` as just `user` |
+
+Notes:
+
+- **`--secret`, `--secret-file`, and `--secret-stdin` are mutually exclusive** —
+  giving more than one is an error, so there's no silent surprise about which won.
+- **File sources must not be world-readable** on Linux/macOS: the probe refuses a
+  secret/password file that group or others can read and tells you to `chmod 600`
+  it. Files trim exactly one trailing newline, so `printf 'secret\n' > f` is fine.
+- **Environment variables are convenient but not private from the same user.**
+  Another process running as *you* can read `/proc/<pid>/environ`. For untrusted
+  multi-user boxes, prefer a `chmod 600` file or the interactive prompt.
+- **Standard input**, for pipelines that already hold the secret in a variable:
+
+  ```console
+  $ printf '%s' "$SECRET" | authhound-probe radius test --server radius.corp.com --secret-stdin --peap alice
+  ```
+
+  (Piping the secret into stdin means there's no terminal left to prompt on, so
+  supply the password via `AUTHHOUND_PASSWORD` or `--password-file` in that case.)
+- **The inline `--secret VALUE` and `--pap user:pass` forms still work** for a
+  quick lab test, but on a terminal they print a one-line warning reminding you
+  they leak into history and `ps`. Credential values are never echoed back, never
+  written to `--json` or logs, and never appear in an error message.
 
 ### EAP-TLS: preparing a client certificate
 
@@ -228,7 +291,7 @@ Use a dedicated secret and a least-privilege test account — never a real admin
 Built to be safe to run against production, and to pass an enterprise security review:
 
 - **Read-only.** Sends Access-Requests and reads the replies — it never changes anything on the server, and never captures packets.
-- **Credentials stay local.** Secrets and passwords are used only to build the RADIUS packets. They are never written to output or logs, and nothing is ever sent anywhere (there is no telemetry).
+- **Credentials stay local, and off the command line.** The shared secret and any password are used only to build the RADIUS packets. They are never written to output, `--json`, logs, or error messages, and nothing is ever sent anywhere (there is no telemetry). So they don't leak into shell history or `ps` on a shared box, they're read from a file (`--secret-file` / `--password-file`, refused if world-readable), an environment variable, standard input, or a no-echo prompt — see [Where credentials come from](#where-credentials-come-from). The plain `--secret`/`user:pass` forms still work but warn on a terminal.
 - **Never completes a second factor** and never proxies authentication.
 - **Hard-coded rate ceiling** the config cannot override — it cannot be turned into a load generator.
 - **Verifiable releases.** Binaries and images are checksummed and keyless-signed (Sigstore cosign) by the tagged release workflow — [verify them](#verify-your-download) before you trust them on a shared jump box.
