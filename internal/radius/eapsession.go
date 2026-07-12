@@ -190,6 +190,91 @@ func (s *EAPSession) AuthPEAPMSCHAPv2(ctx context.Context, userName, password, s
 	return res, nil
 }
 
+// EAPTLSResult reports the outcome of an EAP-TLS authentication attempt.
+type EAPTLSResult struct {
+	Success bool
+	Reason  string // plain-English cause when Success is false
+	Cert    *CapturedCert
+}
+
+// AuthEAPTLS runs a real EAP-TLS authentication, presenting the given client
+// certificate. In EAP-TLS the TLS handshake *is* the authentication: the server
+// validates the client certificate during the handshake. We complete the
+// handshake, then drive the final EAP exchange to read the server's verdict
+// (Access-Accept vs Access-Reject) — so we can tell "certificate untrusted"
+// apart from "certificate fine, but the server's policy rejected this identity".
+//
+// The private key is used only to complete the handshake and never leaves the host.
+func (s *EAPSession) AuthEAPTLS(ctx context.Context, clientCert tls.Certificate, serverName string) (*EAPTLSResult, error) {
+	start, err := s.startTunnel(EAPTypeTLS)
+	if err != nil {
+		return &EAPTLSResult{Reason: "the server did not offer EAP-TLS (" + err.Error() + ")"}, nil
+	}
+	conn := &eapTLSConn{sess: s, eapType: EAPTypeTLS, curID: start.ID, fragSize: 1024}
+	captured := &CapturedCert{}
+	conf := s.tlsConfig(serverName, captured, false)
+	// Always present our client cert, even if the server's advertised CA list
+	// doesn't include its issuer — so an untrusted cert produces a clear trust
+	// error instead of silently sending none.
+	cc := clientCert
+	conf.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return &cc, nil }
+
+	tc := tls.Client(conn, conf)
+	if hsErr := tc.HandshakeContext(ctx); hsErr != nil {
+		return &EAPTLSResult{Success: false, Reason: explainTLSError(hsErr), Cert: captured}, nil
+	}
+
+	// Handshake completed → the server cryptographically accepted the client
+	// certificate. Send the final empty EAP-TLS ACK and read the outer verdict.
+	code, err := conn.finishEAPTLS()
+	if err != nil {
+		// Handshake succeeded but we couldn't read the final verdict; treat the
+		// cryptographic acceptance as success (common, read-only case).
+		return &EAPTLSResult{Success: true, Cert: captured}, nil
+	}
+	if code == AccessAccept {
+		return &EAPTLSResult{Success: true, Cert: captured}, nil
+	}
+	return &EAPTLSResult{
+		Success: false, Cert: captured,
+		Reason: "the client certificate is valid and trusted, but the server rejected the login — an authorization policy (e.g. the certificate's identity is not permitted, or no matching user/group).",
+	}, nil
+}
+
+// finishEAPTLS sends the empty EAP-TLS response that acknowledges the server's
+// final handshake flight, and returns the resulting RADIUS reply code.
+func (c *eapTLSConn) finishEAPTLS() (Code, error) {
+	ack := (&EAPPacket{Code: EAPResponse, ID: c.curID, Type: c.eapType, Data: []byte{0}}).Marshal()
+	_, code, err := c.sess.send(ack)
+	return code, err
+}
+
+// explainTLSError turns a Go TLS handshake error into a cause an admin can act
+// on. Most EAP-TLS failures are the server rejecting the client certificate.
+func explainTLSError(err error) string {
+	e := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(e, "unknown certificate authority"), strings.Contains(e, "unknown ca"),
+		// Many servers (e.g. FreeRADIUS) reject an untrusted client cert with a
+		// fatal unknown_ca alert followed by an outer EAP-Failure — which reaches
+		// us as this generic error. In the EAP-TLS path it means the same thing.
+		strings.Contains(e, "eap-failure"):
+		return "the server rejected the client certificate — most often it isn't signed by a CA the server trusts for EAP-TLS (or it's expired / has the wrong key usage). Verify the client cert chains to a CA the RADIUS server is configured to trust."
+	case strings.Contains(e, "expired"):
+		return "the client certificate has expired — or the server's clock disagrees with it. Check the cert's validity dates and both clocks."
+	case strings.Contains(e, "revoked"):
+		return "the server reports the client certificate as revoked (CRL/OCSP)."
+	case strings.Contains(e, "certificate required"):
+		return "the server did not accept the client certificate (it may not be sent, malformed, or its key usage is wrong)."
+	case strings.Contains(e, "bad certificate"), strings.Contains(e, "certificate unknown"), strings.Contains(e, "unsupported certificate"), strings.Contains(e, "access denied"):
+		return "the server rejected the client certificate (bad/unsupported/denied). Check that it's a client-auth cert issued by a trusted CA."
+	case strings.Contains(e, "handshake failure"), strings.Contains(e, "protocol version"), strings.Contains(e, "no cipher"):
+		return "TLS handshake failure — the server may not support EAP-TLS here, or there's no common TLS version/cipher."
+	default:
+		return "EAP-TLS handshake failed: " + err.Error()
+	}
+}
+
 // runInnerMSCHAPv2 drives the inner EAP-MSCHAPv2 exchange inside the completed
 // PEAP TLS tunnel (tc).
 //

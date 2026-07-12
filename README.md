@@ -33,6 +33,7 @@ Like `eapol_test` or `radtest`, but the output is readable — one command, no `
 | **Shared secret** | Cryptographically verifies the server's reply signature. A pass *proves* the secret matches — no more guessing whether "everyone's getting rejected" is a secret problem or something else. |
 | **PAP authentication** | A real login with credentials you supply → Accept or Reject, decoded. Also detects an **MFA/second-factor challenge** and reports it (the probe does not complete push/OTP — see below). |
 | **PEAP-MSCHAPv2** | The method most enterprise 802.1X networks actually run: a real inner authentication inside the PEAP TLS tunnel. Reports success — and verifies the server's own MSCHAPv2 proof (mutual auth) — or the decoded reason on rejection. The "can my users actually log in?" test. |
+| **EAP-TLS** | Certificate-based login (no password): presents a client certificate and reports whether the server accepts it — with a plain-English reason on failure (untrusted CA, expired cert, policy reject). See [EAP-TLS: preparing a client certificate](#eap-tls-preparing-a-client-certificate). |
 | **Server certificate** | Establishes the PEAP/TLS tunnel over RADIUS, captures the server's certificate, and flags **expiry**, an incomplete intermediate chain, and the negotiated TLS version. The "Wi-Fi died overnight" outage, caught early. |
 
 ### A note on MFA / two-factor
@@ -56,12 +57,15 @@ $ authhound-probe radius test --server radius.corp.com --secret '••••' -
 # PAP — VPNs, simple setups, or as a backend baseline
 $ authhound-probe radius test --server radius.corp.com --secret '••••' --pap 'user:password'
 
-# both at once
+# EAP-TLS — certificate-based login (see cert prep below)
 $ authhound-probe radius test --server radius.corp.com --secret '••••' \
-    --pap 'user:password' --peap 'user:password'
-```
+    --client-cert client.pem --client-key client.key
 
-EAP-TLS (client-certificate) authentication is in progress — the TLS engine that already powers PEAP-MSCHAPv2 and certificate capture is the hard part, and it's done.
+# several at once
+$ authhound-probe radius test --server radius.corp.com --secret '••••' \
+    --pap 'user:password' --peap 'user:password' \
+    --client-cert client.pem --client-key client.key
+```
 
 **All flags:**
 
@@ -71,12 +75,37 @@ EAP-TLS (client-certificate) authentication is in progress — the TLS engine th
 | `--secret SECRET` | Shared secret for this probe on the server. **Required.** |
 | `--pap user:pass` | Run a PAP authentication test. |
 | `--peap user:pass` | Run a PEAP-MSCHAPv2 authentication test. |
+| `--client-cert FILE` `--client-key FILE` | Run an EAP-TLS test with this client certificate + key (PEM). |
 | `--nas-port-type wireless\|ethernet\|virtual` | How the probe presents itself, so server policies match (default `wireless`). |
 | `--server-name NAME` | Expected server-certificate name (TLS SNI). |
 | `--nas-id NAME` | NAS-Identifier to send (default `authhound-probe`). |
 | `--timeout DURATION` | Per-request timeout (default `5s`). |
 | `--json` | Machine-readable output for scripts / RMM. |
 | `--no-color` | Disable ANSI colour. |
+
+### EAP-TLS: preparing a client certificate
+
+EAP-TLS logs in with a **certificate instead of a password**, so the probe needs
+a client cert + key in **PEM** format. You don't need to make anything new — reuse
+what your devices already use, or issue one dedicated test cert:
+
+**Already have a `.pfx` / `.p12`?** (a common Windows / MDM export) Convert it —
+the export password is what you set when exporting:
+
+```console
+$ openssl pkcs12 -in device.p12 -clcerts -nokeys -out client.pem   # the certificate
+$ openssl pkcs12 -in device.p12 -nocerts -nodes  -out client.key   # the private key
+```
+
+**Issuing a dedicated test cert?** Have your CA sign one for a throwaway identity
+(e.g. `CN=authhound-probe`) the same way it signs device/user certs, and export it
+as PEM. It must be a **client-authentication** cert whose chain is trusted by the
+RADIUS server for EAP-TLS — that's the one requirement.
+
+The key is read from disk only to complete the TLS handshake; it is never
+transmitted or logged. If the cert is untrusted, expired, or rejected by policy,
+the probe says exactly which — so you know whether to fix the cert, the CA trust,
+or the server's authorization rules.
 
 ## Install
 
