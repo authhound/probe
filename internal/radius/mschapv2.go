@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"golang.org/x/crypto/md4"
+	"github.com/authhound/probe/internal/md4"
 )
 
 // MSCHAPv2 (RFC 2759) computations, used as the inner method of PEAP. All of

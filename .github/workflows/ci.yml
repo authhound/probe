@@ -3,14 +3,39 @@ on:
   push:
     branches: [main]
   pull_request:
+
+# Least privilege by default; no job in this workflow needs write access.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: stable
       - run: go vet ./...
       - run: go test ./...
       - run: go build ./cmd/authhound-probe
+
+  # Fails only on vulnerabilities REACHABLE from our code (call-graph analysis),
+  # so a red run here always means action is required — no alert fatigue.
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+
+  # Second opinion on PRs that change the dependency manifest: flags newly
+  # introduced vulnerable versions (reachable or not) and license changes.
+  # Complements govulncheck rather than duplicating it — it only fires when a
+  # PR touches dependencies, so its noise floor is effectively zero.
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: moderate

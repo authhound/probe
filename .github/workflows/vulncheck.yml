@@ -1,0 +1,55 @@
+name: Scheduled vulnerability scan
+
+# Daily govulncheck of the default branch. PR-time scanning (ci.yml) only
+# covers code we touch; this run is what catches CVEs published against
+# dependencies — or the Go standard library — that we haven't changed in
+# months. Findings open (or update) a single tracking issue.
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily, 06:17 UTC (off the top of the hour to dodge cron congestion)
+  workflow_dispatch: # manual runs for testing
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # file/update the tracking issue on findings
+    steps:
+      - uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        id: scan
+        with:
+          output-file: govulncheck.txt
+        continue-on-error: true
+
+      - name: Show scan output in the job log
+        run: cat govulncheck.txt || echo "scan produced no output file (tool failure, not findings)"
+
+      # One label-deduped tracking issue: comment on the existing open issue if
+      # there is one, otherwise create it. Never spams one-issue-per-day.
+      - name: Open or update tracking issue on findings
+        if: steps.scan.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh label create govulncheck --description "Automated vulnerability-scan findings" --color D93F0B || true
+          body="$(printf 'Scheduled govulncheck found reachable vulnerabilities on `main`.\n\nRun: %s\n\n```\n%s\n```\n' "$RUN_URL" "$(cat govulncheck.txt)")"
+          existing="$(gh issue list --label govulncheck --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create \
+              --title "govulncheck: reachable vulnerability on main" \
+              --label govulncheck \
+              --body "$body"
+          fi
+
+      - name: Fail the run on findings
+        if: steps.scan.outcome == 'failure'
+        run: exit 1

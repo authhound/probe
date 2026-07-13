@@ -40,7 +40,10 @@ Then watch **Actions → Release**. On success you'll have:
 - A GitHub Release at `releases/tag/v0.1.0` with:
   - `authhound-probe_{linux,darwin}_{amd64,arm64}.tar.gz`
   - `authhound-probe_windows_{amd64,arm64}.zip`
-  - `checksums.txt`, `checksums.txt.sig`, `checksums.txt.pem`
+  - one SPDX SBOM per archive (`*.sbom.json`) — the exact module list inside
+    each build, so anyone can check exposure to a published CVE in seconds
+  - `checksums.txt`, `checksums.txt.sig`, `checksums.txt.pem` (checksums cover
+    the SBOMs too, so the one signature authenticates everything)
 - `ghcr.io/authhound/probe:0.1.0` and `:latest` (multi-arch amd64+arm64), signed.
 
 The README's `releases/latest/download/authhound-probe_linux_amd64.tar.gz` link
@@ -108,6 +111,26 @@ the clean version (`v0.1.0` → `authhound-probe 0.1.0`).
   `.goreleaser.yaml`, add a `docker/login-action` step for Docker Hub in the
   workflow using `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets, and update the
   README's Docker line. ghcr stays primary either way.
+
+## Dependency update policy
+
+Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml)) opens PRs for
+Go modules and for the SHA-pinned GitHub Actions. **Nothing auto-merges** —
+this is deliberate, not an oversight:
+
+- **Security-fix PRs** (Dependabot security updates, or anything fixing a
+  govulncheck finding): review and merge **same week**, then cut a patch
+  release if the fix is in a shipped code path.
+- **Routine version bumps** arrive Mondays as one grouped minor/patch PR
+  (majors come separately). They wait for the weekly batch review plus a green
+  test suite — no fast lane.
+
+Rationale: real supply-chain attacks ride **new** versions (a hijacked
+maintainer account publishes a malicious release and waits for auto-updaters).
+A small cooldown plus human review is the mitigation that costs us minutes and
+costs an attacker their window. Tampered *re-publishes* of existing versions
+are already blocked by Go's checksum database (`sum.golang.org`), which `go
+mod verify` and every module download check against.
 
 ## If a release fails
 

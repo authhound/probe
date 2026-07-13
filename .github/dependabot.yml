@@ -1,0 +1,32 @@
+# Update policy (see RELEASING.md "Dependency update policy"):
+# - Security updates: Dependabot opens PRs immediately on disclosed vulns
+#   (enabled in repo Settings -> Advanced Security, not here).
+# - Routine version updates: weekly, minor/patch grouped into one batch PR,
+#   majors as separate PRs. Nothing auto-merges — real supply-chain attacks
+#   ride NEW versions, so every bump gets a human review and a green test
+#   suite; Go's checksum DB already guards against tampered re-publishes.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      go-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Keeps the SHA-pinned actions in .github/workflows current via PRs
+  # (Dependabot updates the pinned SHA and the version comment together).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch

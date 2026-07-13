@@ -294,7 +294,8 @@ Built to be safe to run against production, and to pass an enterprise security r
 - **Credentials stay local, and off the command line.** The shared secret and any password are used only to build the RADIUS packets. They are never written to output, `--json`, logs, or error messages, and nothing is ever sent anywhere (there is no telemetry). So they don't leak into shell history or `ps` on a shared box, they're read from a file (`--secret-file` / `--password-file`, refused if world-readable), an environment variable, standard input, or a no-echo prompt — see [Where credentials come from](#where-credentials-come-from). The plain `--secret`/`user:pass` forms still work but warn on a terminal.
 - **Never completes a second factor** and never proxies authentication.
 - **Hard-coded rate ceiling** the config cannot override — it cannot be turned into a load generator.
-- **Verifiable releases.** Binaries and images are checksummed and keyless-signed (Sigstore cosign) by the tagged release workflow — [verify them](#verify-your-download) before you trust them on a shared jump box.
+- **Verifiable releases.** Binaries and images are checksummed and keyless-signed (Sigstore cosign) by the tagged release workflow, and every release ships an SBOM per archive — [verify them](#verify-your-download) before you trust them on a shared jump box.
+- **Minimal, scanned supply chain.** One direct dependency (`golang.org/x/term`), `govulncheck` on every PR plus a daily scheduled scan, Dependabot with mandatory human review, and SHA-pinned CI actions — the full posture is documented in [SECURITY.md](SECURITY.md).
 - **Open source (Apache-2.0).** Read it — or run `./test/freeradius-smoke.sh` to watch it work against a throwaway FreeRADIUS in Docker.
 
 ## From spot-check to continuous monitoring

@@ -35,6 +35,13 @@ checksum:
   name_template: "checksums.txt"
   algorithm: sha256
 
+# One SPDX SBOM per release archive (syft, installed in the release workflow).
+# -> authhound-probe_linux_amd64.tar.gz.sbom.json, ... — lets anyone answer
+# "does this release contain vulnerable module X?" in seconds. SBOMs are listed
+# in checksums.txt, so the cosign signature below covers them too.
+sboms:
+  - artifacts: archive
+
 # Keyless (Sigstore) signing of the checksums file. Because checksums.txt lists
 # the SHA256 of every archive, one verified signature over it transitively
 # authenticates every artifact. Produces checksums.txt.sig + checksums.txt.pem.
