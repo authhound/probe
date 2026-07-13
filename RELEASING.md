@@ -60,7 +60,17 @@ artifacts match what the pipeline built. This is the acceptance check.
 
 ## Dry run (before tagging)
 
-You can exercise the whole config locally without publishing anything.
+**In CI:** the [Release dry-run](.github/workflows/release-dryrun.yml) workflow
+runs the exact release steps (same SHA-pinned actions, same GoReleaser version)
+with `--snapshot` — everything is built, nothing is tagged, signed, or
+published. It triggers automatically on any PR touching the release path
+(release workflow, `.goreleaser.yaml`, `Dockerfile.goreleaser` — including
+Dependabot action bumps), and manually from **Actions → Release dry-run → Run
+workflow**. A green dry-run is the strongest pre-tag signal available. Its
+action pins must stay identical to `release.yml`; Dependabot bumps both files
+in one PR.
+
+**Locally:** you can also exercise the config without publishing anything.
 
 ```console
 # Validate the config (also catches deprecations):
