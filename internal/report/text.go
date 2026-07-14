@@ -44,12 +44,43 @@ func (s *TextSink) Emit(r check.Result) {
 	if r.Detail != "" {
 		fmt.Fprintf(s.w, "        %s\n", wrap(r.Detail, 72, "        "))
 	}
+	if r.Authorization != nil {
+		s.renderAuthorization(r.Authorization)
+	}
 	if r.Hint != "" {
 		// Hints are pre-formatted, paste-ready snippets: print line-by-line
 		// with indent, never re-wrapped (wrap() would mangle the formatting).
 		fmt.Fprintln(s.w)
 		for _, line := range strings.Split(r.Hint, "\n") {
 			fmt.Fprintf(s.w, "        %s\n", line)
+		}
+	}
+}
+
+// renderAuthorization prints the Access-Accept authorization block: the
+// attributes the server returned (the VLAN/policy answer) and the outcome of any
+// --expect-vlan/--expect-attr assertions.
+func (s *TextSink) renderAuthorization(a *check.Authorization) {
+	if len(a.Attributes) > 0 {
+		fmt.Fprintf(s.w, "        Authorization returned by the server:\n")
+		for _, at := range a.Attributes {
+			if at.Vendor != 0 {
+				fmt.Fprintf(s.w, "          %s = %s  [vendor %d]\n", at.Name, at.Value, at.Vendor)
+			} else {
+				fmt.Fprintf(s.w, "          %s = %s\n", at.Name, at.Value)
+			}
+		}
+	}
+	for _, ar := range a.Assertions {
+		switch {
+		case ar.Indeterminate:
+			fmt.Fprintf(s.w, "          assert %s=%s: could not verify (Access-Accept not read)\n", ar.Label, ar.Expected)
+		case ar.Pass:
+			fmt.Fprintf(s.w, "          assert %s=%s: OK\n", ar.Label, ar.Expected)
+		case ar.Actual == "":
+			fmt.Fprintf(s.w, "          assert %s=%s: MISMATCH (not returned)\n", ar.Label, ar.Expected)
+		default:
+			fmt.Fprintf(s.w, "          assert %s=%s: MISMATCH (got %s)\n", ar.Label, ar.Expected, ar.Actual)
 		}
 	}
 }

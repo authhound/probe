@@ -62,6 +62,7 @@ Skipped this step? The probe notices: on a first-run timeout it prints this exac
 | **PEAP-MSCHAPv2** | The method most enterprise 802.1X networks actually run: a real inner authentication inside the PEAP TLS tunnel. Reports success — and verifies the server's own MSCHAPv2 proof (mutual auth) — or the decoded reason on rejection. The "can my users actually log in?" test. |
 | **EAP-TTLS (PAP)** | A real login inside the TTLS tunnel using inner PAP. Because the password is checked in cleartext (safe inside the tunnel), TTLS-PAP works against *any* backend — including hashed stores that MSCHAPv2 can't use. If PEAP-MSCHAPv2 fails but this passes, the directory can't produce an NT hash. |
 | **EAP-TLS** | Certificate-based login (no password): presents a client certificate and reports whether the server accepts it — with a plain-English reason on failure (untrusted CA, expired cert, policy reject). See [EAP-TLS: preparing a client certificate](#eap-tls-preparing-a-client-certificate). |
+| **Authorization / VLAN** | On any successful login, decodes and prints the authorization the Access-Accept returned (VLAN, Filter-Id, Session-Timeout, vendor attributes) — and lets you **assert** on it with `--expect-vlan` / `--expect-attr` so "auth works, wrong VLAN" fails loudly. See [Verifying policy](#verifying-policy-not-just-connectivity). |
 | **Server certificate** | Establishes the PEAP/TLS tunnel over RADIUS, captures the server's certificate, and flags **expiry**, an incomplete intermediate chain, and the negotiated TLS version. The "Wi-Fi died overnight" outage, caught early. |
 | **Path MTU / fragmentation** (`--mtu`) | Finds the largest RADIUS packet that survives the round trip. Pinpoints the invisible failure where a firewall or VPN drops large / IP-fragmented UDP, so the multi-kilobyte EAP-TLS certificate flight never arrives and 802.1X silently stalls — while every server-side log looks clean. |
 | **RadSec** (`radsec test`) | Checks a RADIUS/TLS endpoint on TCP/2083: reachability, TLS handshake, server certificate, and a RADIUS exchange over the tunnel. For modern deployments and UDP→RadSec migration readiness. |
@@ -188,6 +189,8 @@ $ authhound-probe radsec test --server radius.corp.com \
 | `--ttls user[:pass]` | Run an EAP-TTLS (inner PAP) test. Give just `user` to be prompted. |
 | `--password-file FILE` | Password for a `user`-only `--pap/--peap/--ttls`, from a file (non-interactive). |
 | `--client-cert FILE` `--client-key FILE` | Run an EAP-TLS test with this client certificate + key (PEM). |
+| `--expect-vlan ID` | Assert the Access-Accept assigns this VLAN (`Tunnel-Private-Group-ID`). Mismatch = **FAIL** — see [Verifying policy](#verifying-policy-not-just-connectivity). |
+| `--expect-attr Name=Value` | Assert a returned authorization attribute (repeatable), e.g. `--expect-attr Filter-Id=staff`. Mismatch = **FAIL**. |
 | `--mtu` | Run the path-MTU / fragmentation probe (sends a few padded packets). |
 | `--count N` | Run the checks `N` times (2–50) and report aggregate statistics — see [Chasing intermittent failures](#chasing-intermittent-failures). |
 | `--interval DURATION` | Pause between `--count` iterations (default `2s`; a hard-coded safety floor applies). |
@@ -198,6 +201,72 @@ $ authhound-probe radsec test --server radius.corp.com \
 | `--json` | Machine-readable output for scripts / RMM ([schema](docs/json-schema.md)). |
 | `--strict` | Exit non-zero on **warnings** too (e.g. a soon-to-expire cert), for scheduled monitoring. |
 | `--no-color` | Force plain output. Colour is auto-detected otherwise — see [Colour](#colour-and-windows-terminals). |
+
+### Verifying policy, not just connectivity
+
+"Login works" is only half the question. On 802.1X networks a huge share of real
+tickets are *"authentication succeeds, but the user lands in the wrong VLAN"* — the
+guest VLAN instead of staff, or no VLAN at all. The server's answer is right there
+in the **Access-Accept**, in its authorization attributes. The probe surfaces them
+and lets you assert on them, so a policy regression fails loudly instead of
+silently mis-segmenting users.
+
+On any successful authentication, the returned authorization is printed:
+
+```console
+$ authhound-probe radius test --server radius.corp.com --peap alice
+...
+PASS  PEAP-MSCHAPv2 authentication succeeded for alice
+        Authorization returned by the server:
+          Tunnel-Type = VLAN (13)
+          Tunnel-Medium-Type = IEEE-802 (6)
+          Tunnel-Private-Group-ID = 20
+          Filter-Id = staff
+```
+
+Now **assert** the VLAN you expect. A match keeps the PASS; a mismatch is a FAIL
+(exit 1), with a line that tells you where to look:
+
+```console
+$ authhound-probe radius test --server radius.corp.com --peap alice --expect-vlan 20
+...
+FAIL  PEAP-MSCHAPv2 authentication succeeded for alice — but the returned authorization does not match
+        Server assigned VLAN 30, expected 20. Check the policy/authorization
+        rules that matched this request (NAS-Port-Type, user group, time-of-day).
+        This probe sent NAS-Port-Type=wireless; many policies branch on it, so a
+        different value (--nas-port-type wireless|ethernet|virtual) can select a
+        different VLAN/policy.
+          assert VLAN=20: MISMATCH (got 30)
+```
+
+That last hint matters: **policies frequently branch on `NAS-Port-Type`**, so a
+wired switch (`ethernet`) and a wireless AP (`wireless`) can land the same user in
+different VLANs. If the assertion fails, re-run with the `--nas-port-type` your
+real NAS sends to confirm whether that's the deciding input:
+
+```console
+# same user, presented as a wired switch — different policy, different VLAN
+$ authhound-probe radius test --server radius.corp.com --peap alice \
+    --nas-port-type ethernet --expect-vlan 30
+```
+
+`--expect-attr` generalises this to any returned attribute (repeatable), so you can
+pin a whole policy in a scheduled check:
+
+```console
+$ authhound-probe radius test --server radius.corp.com --peap alice \
+    --expect-vlan 20 --expect-attr Filter-Id=staff --expect-attr Session-Timeout=3600
+```
+
+Under `--json`, each auth result gains an `authorization` object (the decoded
+attributes plus per-assertion `pass`), so RMM/monitoring can alarm on a VLAN drift
+the same way it alarms on a failed login. See the
+[JSON schema](docs/json-schema.md#authorization-object). This works over PAP,
+PEAP-MSCHAPv2, EAP-TTLS, and EAP-TLS — for EAP methods the probe drives the
+exchange all the way to the Access-Accept to read what the NAS would actually
+receive. (Note: your server must copy the inner-tunnel reply out to the outer
+Access-Accept — FreeRADIUS's `use_tunneled_reply = yes` — which is the normal
+configuration for VLAN assignment; without it, no VLAN reaches the NAS either.)
 
 ### Chasing intermittent failures
 

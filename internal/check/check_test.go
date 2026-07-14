@@ -19,7 +19,8 @@ type fakeServer struct {
 	wrongSecret string // if non-empty, sign replies with this instead
 	goodUser    string
 	goodPass    string
-	silent      bool // if true, never replies (simulates unwhitelisted client)
+	silent      bool   // if true, never replies (simulates unwhitelisted client)
+	acceptAttrs []byte // raw attribute bytes appended to an Access-Accept
 	conn        *net.UDPConn
 }
 
@@ -64,11 +65,18 @@ func (fs *fakeServer) buildReply(req []byte) []byte {
 	}
 	code := decideCode(req, fs.goodUser, fs.goodPass, fs.secret)
 
-	// Build reply: Code, ID, Length, ResponseAuthenticator, (no attrs).
-	reply := make([]byte, 20)
+	// Access-Accept may carry authorization attributes (VLAN/Filter-Id/…).
+	var attrs []byte
+	if code == 2 {
+		attrs = fs.acceptAttrs
+	}
+
+	// Build reply: Code, ID, Length, ResponseAuthenticator, Attrs.
+	reply := make([]byte, 20+len(attrs))
 	reply[0] = code
 	reply[1] = req[1] // echo identifier
-	binary.BigEndian.PutUint16(reply[2:4], 20)
+	binary.BigEndian.PutUint16(reply[2:4], uint16(len(reply)))
+	copy(reply[20:], attrs)
 
 	signSecret := fs.secret
 	if fs.wrongSecret != "" {
@@ -78,6 +86,7 @@ func (fs *fakeServer) buildReply(req []byte) []byte {
 	h := md5.New()
 	h.Write(reply[0:4])
 	h.Write(req[4:20]) // request authenticator
+	h.Write(reply[20:])
 	h.Write([]byte(signSecret))
 	copy(reply[4:20], h.Sum(nil))
 	return reply

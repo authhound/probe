@@ -17,7 +17,11 @@
 services:
   freeradius:
     image: freeradius/freeradius-server:latest
-    command: ["-fxx", "-l", "stdout"]
+    # Enable copy_request_to_tunnel + use_tunneled_reply so PEAP/TTLS carry the
+    # request's NAS-Port-Type into the inner tunnel and copy the inner reply's
+    # VLAN out to the outer Access-Accept — how real 802.1X VLAN assignment works,
+    # and what lets `--expect-vlan` verify it over EAP (not just PAP).
+    entrypoint: ["sh", "-c", "sed -i -E 's/(use_tunneled_reply|copy_request_to_tunnel) = no/\\1 = yes/' /etc/raddb/mods-available/eap && exec freeradius -fxx -l stdout"]
     network_mode: host
     volumes:
       - ./config/authorize:/etc/raddb/mods-config/files/authorize:ro

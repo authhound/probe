@@ -1,4 +1,25 @@
 # Test users for the lab. Replaces FreeRADIUS's default authorize file; a single
 # Cleartext-Password line is all the pap/peap/ttls modules need. NOT a secret —
 # throwaway credentials for a local container.
-alice Cleartext-Password := "pw"
+#
+# alice also gets a VLAN assignment that DEPENDS ON NAS-Port-Type, so the probe's
+# --expect-vlan assertion has something real to check and the "wrong VLAN"
+# failure path can be exercised by changing --nas-port-type:
+#   wireless (802.11) -> VLAN 20
+#   ethernet          -> VLAN 30
+# This is the classic `files` fall-through idiom: match the user (set the
+# password, keep going), then let the DEFAULT entries add reply attributes based
+# on the request's NAS-Port-Type.
+alice   Cleartext-Password := "pw"
+        Fall-Through = Yes
+
+DEFAULT NAS-Port-Type == Ethernet
+        Tunnel-Type := VLAN,
+        Tunnel-Medium-Type := IEEE-802,
+        Tunnel-Private-Group-ID := "30",
+        Fall-Through = Yes
+
+DEFAULT NAS-Port-Type == Wireless-802.11
+        Tunnel-Type := VLAN,
+        Tunnel-Medium-Type := IEEE-802,
+        Tunnel-Private-Group-ID := "20"

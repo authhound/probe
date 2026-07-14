@@ -69,6 +69,31 @@ Each entry in `results`:
 | `hint` | string | when present | Multi-line, paste-ready remediation. Newline formatting is significant. Omitted when empty. Never contains secrets. |
 | `fields` | object (string→string) | when present | Structured extras such as `rtt_ms`, `tls_version`, `not_after`, `subject`, `san`, `chain_len`, `source_ip`. `timeout: "true"` marks a request that got no reply at all (a *lost* request, as opposed to a processed rejection). Aggregate verdicts under `--count` add `success_rate`, `attempts`, `successes`, `timeouts`, and `latency_{min,median,p95,max}_ms`. Keys vary by check; values are always strings. Omitted when there are none. |
 | `duration_ns` | integer | when present | How long the check took, in nanoseconds. Omitted when zero. |
+| `authorization` | object | when present | On an auth check that reached an Access-Accept, the authorization attributes the server returned (VLAN/Filter-Id/…) and the outcome of any `--expect-vlan`/`--expect-attr` assertions. See below. Omitted otherwise. |
+
+### `authorization` object
+
+Present on an auth result (`pap-auth`, `peap-mschapv2`, `eap-ttls`, `eap-tls`) when
+the Access-Accept carried authorization attributes and/or assertions were
+requested. A failed assertion also flips that result's `status` to `fail`.
+
+```json
+"authorization": {
+  "attributes": [
+    { "name": "Tunnel-Type", "value": "VLAN (13)" },
+    { "name": "Tunnel-Private-Group-ID", "value": "30" },
+    { "name": "Cisco-AVPair", "value": "shell:priv-lvl=15", "raw": "7368…", "vendor": 9 }
+  ],
+  "assertions": [
+    { "label": "VLAN", "name": "Tunnel-Private-Group-ID", "expected": "20", "actual": "30", "pass": false }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `attributes` | array | Decoded authorization attributes in wire order. Each has `name` and `value`; vendor-specific/opaque ones also carry `raw` (hex) and `vendor` (id). Transport attributes (EAP-Message, Message-Authenticator, State) are excluded. |
+| `assertions` | array | Only when `--expect-vlan`/`--expect-attr` was given. Each: `label` (`"VLAN"` or the attribute name), `name` (attribute checked), `expected`, `actual` (`""` if the attribute was absent), `pass`. `indeterminate: true` appears when auth succeeded but the probe couldn't read the Access-Accept to verify (a `warn`, not a `fail`). |
 
 ## `repeat` block (`--count`)
 

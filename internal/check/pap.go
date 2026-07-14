@@ -48,7 +48,9 @@ func (c PAP) Run(ctx context.Context, t Target) Result {
 
 	switch reply.Code {
 	case radius.AccessAccept:
-		return Result{Check: "pap-auth", Status: StatusPass, Summary: "PAP authentication accepted for " + c.User}
+		return applyAuthorization(
+			Result{Check: "pap-auth", Status: StatusPass, Summary: "PAP authentication accepted for " + c.User},
+			reply, t)
 	case radius.AccessReject:
 		return Result{
 			Check: "pap-auth", Status: StatusFail,

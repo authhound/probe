@@ -78,10 +78,10 @@ func (c EAPTLS) Run(ctx context.Context, t Target) Result {
 	}
 
 	if res.Success {
-		return Result{
+		return applyAuthorization(Result{
 			Check: "eap-tls", Status: StatusPass, Fields: fields,
 			Summary: fmt.Sprintf("EAP-TLS authentication succeeded (client cert %q accepted)", identity),
-		}
+		}, res.Accept, t)
 	}
 	return Result{
 		Check: "eap-tls", Status: StatusFail, Fields: fields,
