@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/authhound/probe/internal/check"
+	"github.com/authhound/probe/internal/radius"
 )
 
 // update regenerates the golden file: `go test ./internal/report -run Golden -update`.
@@ -54,6 +55,23 @@ func goldenResults() []check.Result {
 			Check:   "eap-tls",
 			Status:  check.StatusSkip,
 			Summary: "No client certificate given",
+		},
+		{
+			// Pins the additive `authorization` block: attributes returned on an
+			// Access-Accept plus an assertion outcome (here, a VLAN mismatch FAIL).
+			Check:   "peap-mschapv2",
+			Status:  check.StatusFail,
+			Summary: "PEAP-MSCHAPv2 authentication succeeded for alice — but the returned authorization does not match",
+			Authorization: &check.Authorization{
+				Attributes: []radius.AuthAttr{
+					{Name: "Tunnel-Type", Value: "VLAN (13)"},
+					{Name: "Tunnel-Private-Group-ID", Value: "30"},
+					{Name: "Cisco-AVPair", Value: "shell:priv-lvl=15", Raw: "7368656c6c3a707269762d6c766c3d3135", Vendor: 9},
+				},
+				Assertions: []check.AssertionResult{
+					{Label: "VLAN", Name: "Tunnel-Private-Group-ID", Expected: "20", Actual: "30", Pass: false},
+				},
+			},
 		},
 	}
 }

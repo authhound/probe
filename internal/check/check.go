@@ -36,6 +36,13 @@ type Result struct {
 	Hint     string            `json:"hint,omitempty"`   // multi-line, paste-ready remediation; formatting is significant, never contains secrets
 	Fields   map[string]string `json:"fields,omitempty"` // e.g. rtt_ms, tls_version
 	Duration time.Duration     `json:"duration_ns,omitempty"`
+
+	// Authorization is set by auth checks that reached an Access-Accept: the
+	// decoded authorization attributes the server returned (VLAN/Filter-Id/…)
+	// plus the outcome of any --expect-vlan/--expect-attr assertions. Additive;
+	// present only on a successful authentication that carried attributes or was
+	// asked to assert on them.
+	Authorization *Authorization `json:"authorization,omitempty"`
 }
 
 // Target holds the connection info for one RADIUS server — everything a check
@@ -54,6 +61,11 @@ type Target struct {
 	NASPortType    int // radius.NASPort* value; 0 = omit
 	CalledStation  string
 	CallingStation string
+
+	// Expect holds authorization assertions (--expect-vlan/--expect-attr) to
+	// evaluate against the Access-Accept of every auth method that succeeds. A
+	// mismatch turns that method's PASS into a FAIL — "auth worked, wrong VLAN".
+	Expect []Expectation
 }
 
 // Check is one diagnostic. Implementations must be read-only and must not

@@ -20,6 +20,7 @@ type TTLSResult struct {
 	Success bool
 	Reason  string
 	Cert    *CapturedCert
+	Accept  *Packet // final Access-Accept, for authorization attributes; may be nil
 }
 
 // AuthEAPTTLS completes the EAP-TTLS tunnel and authenticates with inner PAP.
@@ -47,7 +48,7 @@ func (s *EAPSession) AuthEAPTTLS(ctx context.Context, userName, password, server
 	}
 	switch code {
 	case AccessAccept:
-		return &TTLSResult{Success: true, Cert: captured}, nil
+		return &TTLSResult{Success: true, Cert: captured, Accept: s.lastReply}, nil
 	case AccessReject:
 		return &TTLSResult{Success: false, Cert: captured,
 			Reason: "the server rejected the login — wrong password, or the account/policy denies it. " +

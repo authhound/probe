@@ -186,6 +186,9 @@ func cmdRadiusTest(args []string) int {
 	nasID := fs.String("nas-id", "authhound-probe", "NAS-Identifier to send")
 	nasPortType := fs.String("nas-port-type", "wireless", "NAS-Port-Type: wireless, ethernet, or virtual")
 	serverName := fs.String("server-name", "", "expected server certificate name (TLS SNI); optional")
+	expectVLAN := fs.String("expect-vlan", "", "assert the Access-Accept assigns this VLAN (Tunnel-Private-Group-ID); a mismatch is a FAIL")
+	var expectAttr stringSliceFlag
+	fs.Var(&expectAttr, "expect-attr", "assert a returned authorization attribute as 'Name=Value' (repeatable); a mismatch is a FAIL")
 	mtu := fs.Bool("mtu", false, "run the path-MTU / fragmentation probe (sends a few padded packets)")
 	count := fs.Int("count", 1, "run the checks N times (2..50) and report aggregate statistics — for chasing intermittent failures")
 	interval := fs.Duration("interval", 2*time.Second, "pause between --count iterations (a hard-coded safety floor applies)")
@@ -274,6 +277,19 @@ func cmdRadiusTest(args []string) int {
 		fmt.Fprintln(os.Stderr, "error: --client-cert and --client-key must be given together")
 		return 2
 	}
+
+	expect, err := buildExpectations(*expectVLAN, expectAttr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+	// Assertions verify what an Access-Accept returned, so they need an auth
+	// method to produce one — otherwise nothing is ever checked.
+	if len(expect) > 0 && papUser == "" && peapUser == "" && ttlsUser == "" && *clientCert == "" {
+		fmt.Fprintln(os.Stderr, "error: --expect-vlan/--expect-attr need an auth method to assert on (add --pap, --peap, --ttls, or --client-cert)")
+		return 2
+	}
+	target.Expect = expect
 
 	// Sink: JSON for scripting, text for humans.
 	var sink resultSink
@@ -393,6 +409,36 @@ var nasPortTypes = map[string]int{
 	"wireless": radius.NASPortWireless80211,
 	"ethernet": radius.NASPortEthernet,
 	"virtual":  radius.NASPortVirtual,
+}
+
+// stringSliceFlag collects a repeatable string flag (e.g. --expect-attr given
+// several times), in order.
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string { return strings.Join(*s, ", ") }
+func (s *stringSliceFlag) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
+// buildExpectations turns --expect-vlan and --expect-attr flags into the
+// authorization assertions the checks evaluate on Access-Accept. --expect-vlan
+// is a convenience for Tunnel-Private-Group-ID labelled "VLAN"; --expect-attr
+// takes 'Name=Value' where Name is the attribute's display name.
+func buildExpectations(vlan string, attrs stringSliceFlag) ([]check.Expectation, error) {
+	var out []check.Expectation
+	if vlan != "" {
+		out = append(out, check.Expectation{Name: "Tunnel-Private-Group-ID", Value: vlan, Label: "VLAN"})
+	}
+	for _, a := range attrs {
+		name, value, ok := strings.Cut(a, "=")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" {
+			return nil, fmt.Errorf("--expect-attr must be 'Name=Value', got %q", a)
+		}
+		out = append(out, check.Expectation{Name: name, Value: value, Label: name})
+	}
+	return out, nil
 }
 
 // resolveCreds parses a "user[:password]" flag value and resolves the password

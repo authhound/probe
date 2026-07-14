@@ -35,11 +35,43 @@
       "check": "eap-tls",
       "status": "skip",
       "summary": "No client certificate given"
+    },
+    {
+      "check": "peap-mschapv2",
+      "status": "fail",
+      "summary": "PEAP-MSCHAPv2 authentication succeeded for alice — but the returned authorization does not match",
+      "authorization": {
+        "attributes": [
+          {
+            "name": "Tunnel-Type",
+            "value": "VLAN (13)"
+          },
+          {
+            "name": "Tunnel-Private-Group-ID",
+            "value": "30"
+          },
+          {
+            "name": "Cisco-AVPair",
+            "value": "shell:priv-lvl=15",
+            "raw": "7368656c6c3a707269762d6c766c3d3135",
+            "vendor": 9
+          }
+        ],
+        "assertions": [
+          {
+            "label": "VLAN",
+            "name": "Tunnel-Private-Group-ID",
+            "expected": "20",
+            "actual": "30",
+            "pass": false
+          }
+        ]
+      }
     }
   ],
   "summary": {
     "pass": 1,
-    "fail": 1,
+    "fail": 2,
     "warn": 1,
     "info": 1,
     "skip": 1

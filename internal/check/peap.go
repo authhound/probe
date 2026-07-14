@@ -68,7 +68,9 @@ func (c PEAPMSCHAPv2) Run(ctx context.Context, t Target) Result {
 		} else {
 			detail = "Authentication succeeded, but the server's authenticator response did not verify against this password — unusual; worth a look if it persists."
 		}
-		return Result{Check: "peap-mschapv2", Status: StatusPass, Summary: summary, Detail: detail, Fields: fields}
+		return applyAuthorization(
+			Result{Check: "peap-mschapv2", Status: StatusPass, Summary: summary, Detail: detail, Fields: fields},
+			res.Accept, t)
 	}
 
 	if res.ErrorCode > 0 {

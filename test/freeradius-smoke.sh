@@ -22,7 +22,17 @@ trap 'rm -rf "$work"; docker rm -f ah-freeradius ah-freeradius-nc ah-freeradius-
 # Windows computer account takes through PEAP-MSCHAPv2.
 cat > "$work/authorize" <<'EOF'
 alice Cleartext-Password := "pw"
+      Fall-Through = Yes
 host/PC-01.corp.local Cleartext-Password := "machinepw"
+DEFAULT NAS-Port-Type == Ethernet
+        Tunnel-Type := VLAN,
+        Tunnel-Medium-Type := IEEE-802,
+        Tunnel-Private-Group-ID := "30",
+        Fall-Through = Yes
+DEFAULT NAS-Port-Type == Wireless-802.11
+        Tunnel-Type := VLAN,
+        Tunnel-Medium-Type := IEEE-802,
+        Tunnel-Private-Group-ID := "20"
 EOF
 
 # A minimal RadSec (RADIUS/TLS) listener on TCP/2083 so we can test 'radsec test'
@@ -85,11 +95,16 @@ openssl req -x509 -newkey rsa:2048 -keyout "$short_dir/key.pem" -out "$short_dir
 cat "$short_dir/cert.pem" "$short_dir/key.pem" > "$work/server-short.pem"
 
 echo "== starting FreeRADIUS (debug, threaded for RadSec) =="
+# Enable copy_request_to_tunnel + use_tunneled_reply so that, for PEAP/TTLS, the
+# request's NAS-Port-Type reaches the inner tunnel AND the inner reply's VLAN is
+# copied out to the outer Access-Accept — exactly how real 802.1X VLAN assignment
+# is configured, and what lets the probe read the VLAN over EAP.
 docker run -d --rm --name ah-freeradius --network host \
   -v "$work/authorize:/etc/raddb/mods-config/files/authorize:ro" \
   -v "$work/radsec:/etc/raddb/sites-enabled/radsec:ro" \
   -v "$work/server-short.pem:/etc/raddb/certs/server-short.pem:ro" \
-  freeradius/freeradius-server:latest -fxx -l stdout >/dev/null
+  --entrypoint sh freeradius/freeradius-server:latest -c \
+  "sed -i -E 's/(use_tunneled_reply|copy_request_to_tunnel) = no/\1 = yes/' /etc/raddb/mods-available/eap && exec freeradius -fxx -l stdout" >/dev/null
 
 # Wait for it to be listening.
 for i in $(seq 1 30); do
@@ -123,6 +138,44 @@ echo "== machine auth: host/ identity via PEAP-MSCHAPv2 (NPS-style, expect PASS)
 # machine-account password — no colon in the identity, so it parses cleanly.
 "$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" \
   --nas-port-type ethernet --peap 'host/PC-01.corp.local:machinepw' --no-color || true
+
+echo
+echo "== policy assertion: VLAN in Access-Accept, match vs mismatch (--expect-vlan) =="
+# alice is assigned a VLAN that depends on NAS-Port-Type: wireless -> 20,
+# ethernet -> 30. This is the "auth succeeds into the WRONG VLAN" case the
+# assertion is built to catch. Uses PAP for a deterministic single exchange.
+set +e
+vlan_ok="$("$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" \
+  --pap 'alice:pw' --expect-vlan 20 --no-color)"; vlan_ok_rc=$?
+vlan_bad="$("$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" \
+  --pap 'alice:pw' --expect-vlan 30 --no-color)"; vlan_bad_rc=$?
+vlan_eth="$("$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" \
+  --nas-port-type ethernet --pap 'alice:pw' --expect-vlan 30 --no-color)"; vlan_eth_rc=$?
+set -e
+echo "$vlan_ok"
+echo "$vlan_ok" | grep -q "Tunnel-Private-Group-ID = 20" || { echo "FAIL: VLAN 20 not surfaced"; exit 1; }
+echo "$vlan_ok" | grep -q "assert VLAN=20: OK" || { echo "FAIL: matching VLAN assertion should pass"; exit 1; }
+[ "$vlan_ok_rc" -eq 0 ] || { echo "FAIL: matching VLAN should exit 0, got $vlan_ok_rc"; exit 1; }
+echo "$vlan_bad" | grep -q "MISMATCH (got 20)" || { echo "FAIL: expected a VLAN mismatch line"; exit 1; }
+echo "$vlan_bad" | grep -qi "expected 30" || { echo "FAIL: mismatch guidance missing the expected value"; exit 1; }
+echo "$vlan_bad" | grep -q "NAS-Port-Type" || { echo "FAIL: mismatch guidance should mention NAS-Port-Type"; exit 1; }
+[ "$vlan_bad_rc" -eq 1 ] || { echo "FAIL: VLAN mismatch should exit 1, got $vlan_bad_rc"; exit 1; }
+echo "$vlan_eth" | grep -q "assert VLAN=30: OK" || { echo "FAIL: ethernet should assign VLAN 30"; exit 1; }
+[ "$vlan_eth_rc" -eq 0 ] || { echo "FAIL: ethernet VLAN 30 should exit 0, got $vlan_eth_rc"; exit 1; }
+if echo "$vlan_ok$vlan_bad$vlan_eth" | grep -q "$SECRET"; then echo "FAIL: secret leaked into output"; exit 1; fi
+echo "OK: VLAN surfaced; match passes, mismatch FAILs (exit 1), NAS-Port-Type flips the assignment"
+
+echo
+echo "== policy assertion over PEAP-MSCHAPv2 + --json authorization block =="
+# Proves the probe drives the PEAP exchange all the way to the Access-Accept and
+# reads its VLAN — the marquee 802.1X method, not just PAP.
+pjson="$("$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" \
+  --peap 'alice:pw' --expect-vlan 20 --json || true)"
+echo "$pjson" | grep -q '"authorization"' || { echo "FAIL: --json missing authorization block"; exit 1; }
+echo "$pjson" | grep -q '"Tunnel-Private-Group-ID"' || { echo "FAIL: --json missing the VLAN attribute"; exit 1; }
+echo "$pjson" | grep -q '"pass": true' || { echo "FAIL: PEAP VLAN 20 assertion should pass in JSON"; exit 1; }
+if echo "$pjson" | grep -q "$SECRET"; then echo "FAIL: secret leaked into JSON"; exit 1; fi
+echo "OK: PEAP-MSCHAPv2 surfaced the Access-Accept VLAN and the assertion passed over JSON"
 
 echo
 echo "== same, but secret via AUTHHOUND_SECRET + password via --password-file (expect PASS) =="

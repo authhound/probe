@@ -55,10 +55,10 @@ func (c EAPTTLS) Run(ctx context.Context, t Target) Result {
 	}
 
 	if res.Success {
-		return Result{
+		return applyAuthorization(Result{
 			Check: "eap-ttls", Status: StatusPass, Fields: fields,
 			Summary: "EAP-TTLS (inner PAP) authentication succeeded for " + c.User,
-		}
+		}, res.Accept, t)
 	}
 	return Result{
 		Check: "eap-ttls", Status: StatusFail, Fields: fields,

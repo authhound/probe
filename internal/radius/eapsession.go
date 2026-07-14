@@ -28,9 +28,11 @@ type EAPSession struct {
 	Identity string
 	Attrs    []Attribute // common NAS attributes added to every request
 
-	radiusID byte
-	state    []byte // RADIUS State attribute to echo back
-	rounds   int
+	radiusID  byte
+	state     []byte // RADIUS State attribute to echo back
+	rounds    int
+	lastReply *Packet // most recent RADIUS reply, so callers can read the final
+	//                   Access-Accept's authorization attributes (VLAN/Filter-Id/…)
 }
 
 const maxEAPRounds = 60 // guards against a misbehaving server looping forever
@@ -60,6 +62,7 @@ func (s *EAPSession) send(eap []byte) (*EAPPacket, Code, error) {
 	if err != nil {
 		return nil, 0, err
 	}
+	s.lastReply = reply
 	if st := reply.Get(AttrState); st != nil {
 		s.state = st
 	}
@@ -164,6 +167,10 @@ type PEAPResult struct {
 	ErrorCode    int  // MSCHAPv2 error code on failure (e.g. 691), else 0
 	ErrorCause   string
 	Cert         *CapturedCert
+	// Accept is the final Access-Accept, when the probe was able to drive the
+	// exchange to it, so its authorization attributes (VLAN/Filter-Id/…) can be
+	// read. Nil if the accept could not be captured — auth still succeeded.
+	Accept *Packet
 }
 
 // AuthPEAPMSCHAPv2 completes the PEAP tunnel and runs a real inner EAP-MSCHAPv2
@@ -187,7 +194,30 @@ func (s *EAPSession) AuthPEAPMSCHAPv2(ctx context.Context, userName, password, s
 		return nil, err
 	}
 	res.Cert = captured
+	if res.Success {
+		res.Accept = s.driveToAccept(conn)
+	}
 	return res, nil
+}
+
+// driveToAccept pulls the final Access-Accept out of the server after a PEAP
+// success verdict. The verdict (MSCHAPv2-Success / PEAP Result-TLV) arrives in
+// an Access-Challenge; the server only sends the Access-Accept — which carries
+// the VLAN/authorization attributes — once the NAS acknowledges it. This ships
+// that buffered acknowledgement. It is best-effort: if the accept can't be read
+// (a server that ends early, a timeout), it returns nil and the caller keeps the
+// success verdict, just without authorization attributes.
+func (s *EAPSession) driveToAccept(conn *eapTLSConn) *Packet {
+	if s.lastReply != nil && s.lastReply.Code == AccessAccept {
+		return s.lastReply
+	}
+	if len(conn.outBuf) == 0 {
+		return nil
+	}
+	if code, err := conn.exchangeAppData(); err == nil && code == AccessAccept {
+		return s.lastReply
+	}
+	return nil
 }
 
 // EAPTLSResult reports the outcome of an EAP-TLS authentication attempt.
@@ -195,6 +225,7 @@ type EAPTLSResult struct {
 	Success bool
 	Reason  string // plain-English cause when Success is false
 	Cert    *CapturedCert
+	Accept  *Packet // final Access-Accept, for authorization attributes; may be nil
 }
 
 // AuthEAPTLS runs a real EAP-TLS authentication, presenting the given client
@@ -233,7 +264,7 @@ func (s *EAPSession) AuthEAPTLS(ctx context.Context, clientCert tls.Certificate,
 		return &EAPTLSResult{Success: true, Cert: captured}, nil
 	}
 	if code == AccessAccept {
-		return &EAPTLSResult{Success: true, Cert: captured}, nil
+		return &EAPTLSResult{Success: true, Cert: captured, Accept: s.lastReply}, nil
 	}
 	return &EAPTLSResult{
 		Success: false, Cert: captured,
@@ -300,7 +331,7 @@ func explainTLSError(err error) string {
 // with the outer EAP Code/Identifier/Length omitted (PEAP reconstructs them).
 // So we read/write inner packets as (type, data) pairs, one per TLS record.
 func runInnerMSCHAPv2(tc innerConn, userName, password string) (*PEAPResult, error) {
-	typ, data, err := readInner(tc)
+	typ, innerID, data, err := readInner(tc)
 	if err != nil {
 		return nil, fmt.Errorf("reading first inner EAP request: %w", err)
 	}
@@ -311,7 +342,7 @@ func runInnerMSCHAPv2(tc innerConn, userName, password string) (*PEAPResult, err
 		if err := writeInner(tc, EAPTypeIdentity, []byte(userName)); err != nil {
 			return nil, err
 		}
-		typ, data, err = readInner(tc)
+		typ, innerID, data, err = readInner(tc)
 		if err != nil {
 			return nil, fmt.Errorf("reading inner MSCHAPv2 challenge: %w", err)
 		}
@@ -343,7 +374,7 @@ func runInnerMSCHAPv2(tc innerConn, userName, password string) (*PEAPResult, err
 	// Result-TLV directly on failure; MSCHAPv2 Success then TLV on success).
 	res := &PEAPResult{}
 	for i := 0; i < 4; i++ {
-		typ, data, err = readInner(tc)
+		typ, innerID, data, err = readInner(tc)
 		if err != nil {
 			if res.ErrorCode != 0 || res.Success {
 				return res, nil // we already have a verdict; a torn-down tail is fine
@@ -358,7 +389,10 @@ func runInnerMSCHAPv2(tc innerConn, userName, password string) (*PEAPResult, err
 			res.Success = true
 			res.ServerProved = strings.Contains(string(data[1:]), want)
 			_ = writeInner(tc, EAPTypeMSCHAPv2, []byte{3})
-			return res, nil
+			// Keep going for the PEAP Result-TLV: acknowledging it is what makes the
+			// server emit the final Access-Accept (with the VLAN/authorization
+			// attributes). We already have the success verdict either way.
+			continue
 
 		case typ == EAPTypeMSCHAPv2 && len(data) >= 1 && data[0] == 4: // Failure
 			res.ErrorCode, res.ErrorCause = DecodeMSCHAPError(string(data[1:]))
@@ -367,7 +401,12 @@ func runInnerMSCHAPv2(tc innerConn, userName, password string) (*PEAPResult, err
 
 		case typ == EAPTypeTLV: // PEAP Result-TLV — authoritative
 			success := len(data) >= 6 && data[5] == 1
-			_ = writeInner(tc, EAPTypeTLV, data) // echo the result TLV
+			// Acknowledge with a full-header EAP-Response echoing the request id.
+			// PEAPv0 carries the Result-TLV (and its ack) with a full EAP header;
+			// a header-stripped echo makes the server reject the tunnel completion,
+			// so the final Access-Accept (with the VLAN attributes) never arrives.
+			ack := (&EAPPacket{Code: EAPResponse, ID: innerID, Type: EAPTypeTLV, Data: data}).Marshal()
+			_, _ = tc.Write(ack)
 			if success {
 				res.Success = true
 				return res, nil
@@ -379,7 +418,7 @@ func runInnerMSCHAPv2(tc innerConn, userName, password string) (*PEAPResult, err
 			return res, nil
 		}
 	}
-	if res.ErrorCode != 0 {
+	if res.Success || res.ErrorCode != 0 {
 		return res, nil
 	}
 	return nil, errors.New("no PEAP result after the MSCHAPv2 response")
@@ -391,30 +430,30 @@ type innerConn interface {
 	Write([]byte) (int, error)
 }
 
-// readInner reads one header-stripped inner EAP packet (one TLS record) and
-// returns its EAP type and type-data.
 // readInner reads one inner EAP packet (one TLS record) and returns its EAP
-// type and type-data. PEAPv0 mixes two framings: the inner method (MSCHAPv2) is
-// header-stripped ([type, data]), while EAP-Identity and the Result-TLV arrive
-// with a full EAP header ([code, id, len, len, type, data]). We detect a full
-// header when byte 0 is a valid EAP code (1–4) and the length field matches the
-// record — an MSCHAPv2 packet starts with 0x1a (26), which never collides.
-func readInner(c innerConn) (typ byte, data []byte, err error) {
+// type, the EAP identifier (0 for header-stripped packets), and the type-data.
+// PEAPv0 mixes two framings: the inner method (MSCHAPv2) is header-stripped
+// ([type, data]), while EAP-Identity and the Result-TLV arrive with a full EAP
+// header ([code, id, len, len, type, data]). We detect a full header when byte 0
+// is a valid EAP code (1–4) and the length field matches the record — an
+// MSCHAPv2 packet starts with 0x1a (26), which never collides. The id matters
+// for the Result-TLV: its acknowledgement must echo it back.
+func readInner(c innerConn) (typ, id byte, data []byte, err error) {
 	buf := make([]byte, 4096)
 	n, err := c.Read(buf)
 	if err != nil && n == 0 {
-		return 0, nil, err
+		return 0, 0, nil, err
 	}
 	if n < 1 {
-		return 0, nil, errors.New("empty inner EAP record")
+		return 0, 0, nil, errors.New("empty inner EAP record")
 	}
 	dbg("readInner n=%d raw=%x", n, buf[:n])
 	if n >= 5 && buf[0] >= 1 && buf[0] <= 4 {
 		if length := int(buf[2])<<8 | int(buf[3]); length == n {
-			return buf[4], append([]byte(nil), buf[5:n]...), nil // full EAP header
+			return buf[4], buf[1], append([]byte(nil), buf[5:n]...), nil // full EAP header
 		}
 	}
-	return buf[0], append([]byte(nil), buf[1:n]...), nil // header-stripped
+	return buf[0], 0, append([]byte(nil), buf[1:n]...), nil // header-stripped
 }
 
 // writeInner sends one header-stripped inner EAP packet (type + data).
