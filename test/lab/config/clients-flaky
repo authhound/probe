@@ -1,0 +1,7 @@
+# Client entry for the flaky-profile server. It runs on a bridge network, so
+# the probe's requests arrive from the Docker gateway IP (not 127.0.0.1) —
+# accept any source. Throwaway lab secret; never use this on a real server.
+client lab {
+	ipaddr = 0.0.0.0/0
+	secret = testing123
+}

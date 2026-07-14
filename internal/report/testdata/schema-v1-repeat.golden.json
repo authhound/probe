@@ -1,0 +1,76 @@
+{
+  "schema_version": "1",
+  "results": [
+    {
+      "check": "pap-auth",
+      "status": "fail",
+      "summary": "pap-auth: 1/2 succeeded, 1/2 requests lost — consistent with an unstable path or an overloaded/failing server, not a config error",
+      "detail": "Latency over 1 answered runs: min 4ms, median 4ms, p95 4ms, max 4ms.",
+      "fields": {
+        "attempts": "2",
+        "latency_max_ms": "4",
+        "latency_median_ms": "4",
+        "latency_min_ms": "4",
+        "latency_p95_ms": "4",
+        "success_rate": "1/2",
+        "successes": "1",
+        "timeouts": "1"
+      }
+    }
+  ],
+  "summary": {
+    "pass": 0,
+    "fail": 1,
+    "warn": 0,
+    "info": 0,
+    "skip": 0
+  },
+  "repeat": {
+    "count": 2,
+    "completed": 2,
+    "interval_ms": 1000,
+    "requested_interval_ms": 500,
+    "interval_stretched": true,
+    "iterations": [
+      {
+        "results": [
+          {
+            "check": "pap-auth",
+            "status": "pass",
+            "summary": "PAP authentication accepted for alice",
+            "duration_ns": 4000000
+          }
+        ]
+      },
+      {
+        "results": [
+          {
+            "check": "pap-auth",
+            "status": "fail",
+            "summary": "No reply from 127.0.0.1:1812 within 5s",
+            "fields": {
+              "timeout": "true"
+            },
+            "duration_ns": 5000000000
+          }
+        ]
+      }
+    ],
+    "aggregate": [
+      {
+        "check": "pap-auth",
+        "attempts": 2,
+        "successes": 1,
+        "failures": 1,
+        "timeouts": 1,
+        "skipped": 0,
+        "latency_ms": {
+          "min": 4,
+          "median": 4,
+          "p95": 4,
+          "max": 4
+        }
+      }
+    ]
+  }
+}

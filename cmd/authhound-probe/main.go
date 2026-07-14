@@ -16,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -186,6 +187,8 @@ func cmdRadiusTest(args []string) int {
 	nasPortType := fs.String("nas-port-type", "wireless", "NAS-Port-Type: wireless, ethernet, or virtual")
 	serverName := fs.String("server-name", "", "expected server certificate name (TLS SNI); optional")
 	mtu := fs.Bool("mtu", false, "run the path-MTU / fragmentation probe (sends a few padded packets)")
+	count := fs.Int("count", 1, "run the checks N times (2..50) and report aggregate statistics — for chasing intermittent failures")
+	interval := fs.Duration("interval", 2*time.Second, "pause between --count iterations (a hard-coded safety floor applies)")
 	timeout := fs.Duration("timeout", 5*time.Second, "per-request timeout")
 	jsonOut := fs.Bool("json", false, "emit results as JSON instead of text")
 	noColor := fs.Bool("no-color", false, "disable ANSI colour")
@@ -213,6 +216,18 @@ func cmdRadiusTest(args []string) int {
 	portType, ok := nasPortTypes[*nasPortType]
 	if !ok {
 		fmt.Fprintf(os.Stderr, "error: --nas-port-type must be wireless, ethernet, or virtual\n")
+		return 2
+	}
+
+	// --count 1 (the default) is exactly the classic single run; repeat mode is
+	// hard-capped at RepeatCountMax — this is a diagnosis loop a human watches,
+	// not a monitor (that's `connect`).
+	if *count != 1 && (*count < check.RepeatCountMin || *count > check.RepeatCountMax) {
+		fmt.Fprintf(os.Stderr, "error: --count must be between %d and %d\n", check.RepeatCountMin, check.RepeatCountMax)
+		return 2
+	}
+	if provided["interval"] && *count == 1 {
+		fmt.Fprintln(os.Stderr, "error: --interval only makes sense with --count")
 		return 2
 	}
 
@@ -269,7 +284,6 @@ func cmdRadiusTest(args []string) int {
 		sink = report.NewTextSink(os.Stdout, report.UseColor(os.Stdout, *noColor))
 	}
 
-	runner := check.Runner{Sink: sink}
 	plan := check.Plan{
 		Target: target,
 		Checks: []check.Check{
@@ -283,10 +297,65 @@ func cmdRadiusTest(args []string) int {
 			check.MTUProbe{Enabled: *mtu},
 		},
 	}
+
+	if *count != 1 {
+		return runRepeat(plan, sink, *count, *interval, *strict, *jsonOut)
+	}
+
+	runner := check.Runner{Sink: sink}
 	runner.Run(context.Background(), plan)
 	_ = sink.Close()
 
 	return exitCode(sink, *strict)
+}
+
+// runRepeat drives --count: N sequential iterations, then the aggregate
+// verdicts through the normal sink, so text/JSON rendering and the exit-code
+// contract are identical to a single run. Ctrl-C mid-loop aggregates the
+// iterations that completed instead of throwing them away.
+func runRepeat(plan check.Plan, sink resultSink, count int, interval time.Duration, strict, jsonOut bool) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	effective, stretched := check.EffectiveInterval(interval)
+	if stretched {
+		// Stderr in both modes: with --json, stdout stays pure JSON (the
+		// document carries interval_stretched for scripts).
+		fmt.Fprintf(os.Stderr, "note: --interval %s is below the probe's hard-coded safety floor; running %s apart instead\n", interval, effective)
+	}
+	opts := check.RepeatOptions{Count: count, Interval: interval}
+	if !jsonOut {
+		fmt.Printf("Running %d iterations, %s apart\n\n", count, effective)
+		opts.OnIteration = func(i int, results []check.Result) {
+			fmt.Println(report.IterationLine(i, count, results))
+		}
+	}
+
+	runner := check.Runner{}
+	run, err := check.RunRepeated(ctx, &runner, plan, opts)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+	if completed := len(run.Iterations); completed < count {
+		fmt.Fprintf(os.Stderr, "interrupted — aggregating the %d completed iteration(s)\n", completed)
+		if completed == 0 {
+			return 1
+		}
+	}
+
+	stats := check.AggregateRepeat(run)
+	if !jsonOut {
+		fmt.Printf("\nAggregate over %d runs:\n\n", len(run.Iterations))
+	}
+	for _, s := range stats {
+		sink.Emit(s.Verdict())
+	}
+	if js, ok := sink.(*report.JSONSink); ok {
+		js.SetRepeat(count, run, stats)
+	}
+	_ = sink.Close()
+	return exitCode(sink, strict)
 }
 
 // resultSink is the report-sink surface both subcommands use: the check.ResultSink

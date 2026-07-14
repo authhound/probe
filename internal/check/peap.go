@@ -2,6 +2,7 @@ package check
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -41,13 +42,17 @@ func (c PEAPMSCHAPv2) Run(ctx context.Context, t Target) Result {
 
 	res, err := sess.AuthPEAPMSCHAPv2(ctx, c.User, c.Pass, c.ServerName)
 	if err != nil {
-		return Result{
+		r := Result{
 			Check: "peap-mschapv2", Status: StatusFail,
 			Summary: "PEAP-MSCHAPv2 exchange did not complete",
 			Detail: "The tunnel or inner exchange broke before a verdict: " + err.Error() +
 				". If reachability/secret above failed, fix those first; otherwise the server " +
 				"may not offer PEAP-MSCHAPv2.",
 		}
+		if errors.Is(err, radius.ErrTimeout) {
+			r = markTimeout(r)
+		}
+		return r
 	}
 
 	fields := map[string]string{}

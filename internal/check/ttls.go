@@ -2,6 +2,7 @@ package check
 
 import (
 	"context"
+	"errors"
 
 	"github.com/authhound/probe/internal/radius"
 )
@@ -37,11 +38,15 @@ func (c EAPTTLS) Run(ctx context.Context, t Target) Result {
 
 	res, err := sess.AuthEAPTTLS(ctx, c.User, c.Pass, c.ServerName)
 	if err != nil {
-		return Result{
+		r := Result{
 			Check: "eap-ttls", Status: StatusFail,
 			Summary: "EAP-TTLS exchange did not complete",
 			Detail:  "The tunnel or inner exchange broke before a verdict: " + err.Error() + ".",
 		}
+		if errors.Is(err, radius.ErrTimeout) {
+			r = markTimeout(r)
+		}
+		return r
 	}
 
 	fields := map[string]string{}

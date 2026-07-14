@@ -42,8 +42,9 @@ is a deliberate, reviewed act rather than an accident.
 | Field | Type | Presence | Notes |
 |---|---|---|---|
 | `schema_version` | string | always | Major version of this document shape. Currently `"1"`. |
-| `results` | array of result objects | always | One entry per check, in the order they ran. |
+| `results` | array of result objects | always | One entry per check, in the order they ran. With `--count`, one **aggregate verdict** per check (see the `repeat` block below). |
 | `summary` | object | always | Per-status tally. **All five keys are always present**, including zeros — address `.summary.warn` without checking it exists first. |
+| `repeat` | object | only with `--count` | Additive: per-iteration results and aggregate statistics for a repeated run. Absent on single runs, whose documents are unchanged. |
 
 ### `summary` object
 
@@ -66,8 +67,43 @@ Each entry in `results`:
 | `summary` | string | always | One plain-English line describing the outcome. |
 | `detail` | string | when present | Extra context. Omitted when empty. |
 | `hint` | string | when present | Multi-line, paste-ready remediation. Newline formatting is significant. Omitted when empty. Never contains secrets. |
-| `fields` | object (string→string) | when present | Structured extras such as `rtt_ms`, `tls_version`, `not_after`, `subject`, `san`, `chain_len`, `source_ip`. Keys vary by check; values are always strings. Omitted when there are none. |
+| `fields` | object (string→string) | when present | Structured extras such as `rtt_ms`, `tls_version`, `not_after`, `subject`, `san`, `chain_len`, `source_ip`. `timeout: "true"` marks a request that got no reply at all (a *lost* request, as opposed to a processed rejection). Aggregate verdicts under `--count` add `success_rate`, `attempts`, `successes`, `timeouts`, and `latency_{min,median,p95,max}_ms`. Keys vary by check; values are always strings. Omitted when there are none. |
 | `duration_ns` | integer | when present | How long the check took, in nanoseconds. Omitted when zero. |
+
+## `repeat` block (`--count`)
+
+`radius test --count N` runs the checks N times; the document then carries one
+**aggregate verdict per check** in `results` (so `summary` and the exit code
+reflect the whole run — any failed iteration fails the run), and this block with
+the raw material:
+
+```json
+"repeat": {
+  "count": 10,
+  "completed": 10,
+  "interval_ms": 2000,
+  "requested_interval_ms": 2000,
+  "interval_stretched": false,
+  "iterations": [ { "results": [ /* result objects, one per check */ ] } ],
+  "aggregate": [
+    {
+      "check": "peap-mschapv2",
+      "attempts": 10, "successes": 8, "failures": 2, "timeouts": 2, "skipped": 0,
+      "latency_ms": { "min": 9, "median": 12, "p95": 96, "max": 96 }
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `count` | integer | Requested iterations (2–50). |
+| `completed` | integer | Iterations that actually finished (lower than `count` after Ctrl-C). |
+| `interval_ms` | integer | Pause between iterations actually used. |
+| `requested_interval_ms` | integer | The `--interval` that was asked for. |
+| `interval_stretched` | boolean | `true` when the requested interval was below the hard-coded safety floor and got stretched. |
+| `iterations` | array | One entry per completed iteration, each with its `results` (same result-object shape as the top level). |
+| `aggregate` | array | Per-check tallies. `successes` = the server answered and processed the request (pass/warn/info); `timeouts` = the subset of `failures` where no reply arrived at all. `latency_ms` (nearest-rank percentiles over answered runs) is omitted when nothing was answered. |
 
 ### `status` values
 
@@ -96,6 +132,9 @@ authhound-probe radius test --server r --json | jq '.summary.fail'
 
 # Pin to the schema you coded against:
 ... --json | jq -e '.schema_version=="1"' >/dev/null || echo "schema changed"
+
+# --count: which checks lost requests, from the aggregate block:
+... --count 10 --json | jq -r '.repeat.aggregate[] | select(.timeouts > 0) | "\(.check): \(.timeouts) lost"'
 ```
 
 ## Exit codes

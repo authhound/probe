@@ -37,6 +37,7 @@ func (Reachability) Run(ctx context.Context, t Target) Result {
 		}
 	}
 	if errors.Is(err, radius.ErrTimeout) {
+		fields[TimeoutField] = "true"
 		srcIP := "<this host's IP>"
 		var te *radius.TimeoutError
 		if errors.As(err, &te) && te.LocalIP != "" {
