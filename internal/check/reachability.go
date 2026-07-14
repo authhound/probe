@@ -37,15 +37,25 @@ func (Reachability) Run(ctx context.Context, t Target) Result {
 		}
 	}
 	if errors.Is(err, radius.ErrTimeout) {
+		srcIP := "<this host's IP>"
+		var te *radius.TimeoutError
+		if errors.As(err, &te) && te.LocalIP != "" {
+			srcIP = te.LocalIP
+			fields["source_ip"] = te.LocalIP
+		}
 		return Result{
 			Check: "reachability", Status: StatusFail,
 			Summary: fmt.Sprintf("No reply from %s within %s", t.Address, t.Timeout),
-			Detail: "The server is unreachable, not listening on this port, or it is " +
-				"silently dropping this probe's requests — which happens when the " +
-				"probe's IP is not whitelisted as a RADIUS client OR when the shared " +
-				"secret is wrong (servers drop unverifiable requests without replying). " +
-				"Check the client entry in clients.conf (FreeRADIUS) or RADIUS Clients " +
-				"(NPS): both the IP and the secret must match, then retry.",
+			Detail: "Silence has three causes, and the first two look identical from " +
+				"here — a server drops the request without replying in both cases. In " +
+				"order of likelihood: 1) this probe isn't registered as a RADIUS client " +
+				"on the server (the most common first-run cause — fix below); 2) the " +
+				"shared secret is wrong (also silent, so a timeout can't tell 1 and 2 " +
+				"apart); 3) the server is down, not listening on this port, or a " +
+				"firewall is dropping the UDP. Register the client first, re-run; if it " +
+				"still times out, re-enter the secret on both ends, then check the " +
+				"network path.",
+			Hint:   registrationHint(srcIP),
 			Fields: fields,
 		}
 	}
@@ -54,4 +64,33 @@ func (Reachability) Run(ctx context.Context, t Target) Result {
 		Summary: "Could not reach the server: " + err.Error(),
 		Fields:  fields,
 	}
+}
+
+// secretPlaceholder stands in for the shared secret in the registration hint.
+// The real value must never be rendered (doc rule: secrets never appear in
+// output), so the snippet stays paste-ready except for this one token.
+const secretPlaceholder = "<the secret you passed to this probe>"
+
+// registrationHint builds the paste-ready "register this probe as a RADIUS
+// client" snippet with the detected source IP filled in. srcIP is the local
+// address of the socket that just timed out — the exact IP the server saw
+// (unless NAT rewrote it, which the hint calls out).
+func registrationHint(srcIP string) string {
+	return fmt.Sprintf(`If this probe isn't registered as a RADIUS client yet, that's the most
+likely cause — servers silently drop requests from unknown clients.
+
+FreeRADIUS — add to clients.conf and restart:
+  client authhound-probe {
+      ipaddr = %[1]s
+      secret = %[2]s
+  }
+
+Windows NPS — PowerShell (elevated):
+  New-NpsRadiusClient -Name "authhound-probe" -Address "%[1]s" -SharedSecret "%[2]s"
+
+Cloud/hosted RADIUS — register client IP %[1]s and the same shared
+secret in the vendor's admin UI (see their documentation).
+
+Note: if NAT sits between this host and the server, the server sees a
+different source IP — register the post-NAT address instead.`, srcIP, secretPlaceholder)
 }

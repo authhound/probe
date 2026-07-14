@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"encoding/binary"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -166,6 +167,27 @@ func TestReachabilityTimeout(t *testing.T) {
 	r := (Reachability{}).Run(context.Background(), tgt)
 	if r.Status != StatusFail {
 		t.Errorf("timeout: got %s, want fail", r.Status)
+	}
+
+	// The timeout result must carry a paste-ready registration hint with the
+	// real detected source IP filled in — and never the actual secret.
+	if r.Fields["source_ip"] != "127.0.0.1" {
+		t.Errorf("source_ip: got %q, want 127.0.0.1", r.Fields["source_ip"])
+	}
+	for _, want := range []string{
+		"ipaddr = 127.0.0.1",
+		`New-NpsRadiusClient -Name "authhound-probe" -Address "127.0.0.1"`,
+		"clients.conf",
+		"NAT",
+	} {
+		if !strings.Contains(r.Hint, want) {
+			t.Errorf("hint missing %q; hint:\n%s", want, r.Hint)
+		}
+	}
+	for _, out := range []string{r.Hint, r.Detail, r.Summary} {
+		if strings.Contains(out, "s3cret") {
+			t.Errorf("secret leaked into result: %q", out)
+		}
 	}
 }
 

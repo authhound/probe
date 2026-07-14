@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 
 SECRET="testing123"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"; docker rm -f ah-freeradius >/dev/null 2>&1 || true' EXIT
+trap 'rm -rf "$work"; docker rm -f ah-freeradius ah-freeradius-nc >/dev/null 2>&1 || true' EXIT
 
 # One test user for the PAP check. This file replaces the default authorize
 # file; a single Cleartext-Password line is all the pap module needs.
@@ -104,6 +104,39 @@ echo
 echo "== RadSec (RADIUS/TLS 2083) with client cert (expect TLS + RADIUS PASS) =="
 "$work/authhound-probe" radsec test --server 127.0.0.1 \
   --client-cert "$work/cert.pem" --client-key "$work/key.pem" --no-color || true
+
+echo
+echo "== unwhitelisted probe (fresh server, no client entry -> expect registration hint) =="
+# A fresh FreeRADIUS whose clients.conf contains only a dummy client, so requests
+# from 127.0.0.1 come from an UNKNOWN client and are silently dropped — the
+# guaranteed worst first-run moment. The probe must turn the timeout into a
+# paste-ready registration snippet with the real detected source IP filled in.
+docker rm -f ah-freeradius >/dev/null 2>&1 || true
+cat > "$work/clients-none" <<'EOF'
+client dummy {
+	ipaddr = 192.0.2.1
+	secret = not-used
+}
+EOF
+docker run -d --rm --name ah-freeradius-nc --network host \
+  -v "$work/clients-none:/etc/raddb/clients.conf:ro" \
+  freeradius/freeradius-server:latest -fxx -l stdout >/dev/null
+for i in $(seq 1 30); do
+  if docker logs ah-freeradius-nc 2>&1 | grep -q "Ready to process requests"; then break; fi
+  sleep 0.5
+done
+
+out="$("$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" --timeout 2s --no-color || true)"
+echo "$out"
+echo "$out" | grep -q "ipaddr = 127.0.0.1" || { echo "FAIL: hint missing detected source IP"; exit 1; }
+echo "$out" | grep -q "New-NpsRadiusClient" || { echo "FAIL: hint missing NPS one-liner"; exit 1; }
+if echo "$out" | grep -q "$SECRET"; then echo "FAIL: secret leaked into text output"; exit 1; fi
+
+json="$(AUTHHOUND_SECRET="$SECRET" "$work/authhound-probe" radius test --server 127.0.0.1 --timeout 2s --json || true)"
+echo "$json" | grep -q '"hint"' || { echo "FAIL: --json missing hint field"; exit 1; }
+echo "$json" | grep -q '"source_ip": "127.0.0.1"' || { echo "FAIL: --json missing source_ip field"; exit 1; }
+if echo "$json" | grep -q "$SECRET"; then echo "FAIL: secret leaked into JSON output"; exit 1; fi
+echo "OK: registration hint present with detected IP; secret not leaked"
 
 echo
 echo "== done; tearing down FreeRADIUS =="

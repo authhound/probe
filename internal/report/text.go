@@ -5,6 +5,7 @@ package report
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/authhound/probe/internal/check"
 )
@@ -42,6 +43,14 @@ func (s *TextSink) Emit(r check.Result) {
 	}
 	if r.Detail != "" {
 		fmt.Fprintf(s.w, "        %s\n", wrap(r.Detail, 72, "        "))
+	}
+	if r.Hint != "" {
+		// Hints are pre-formatted, paste-ready snippets: print line-by-line
+		// with indent, never re-wrapped (wrap() would mangle the formatting).
+		fmt.Fprintln(s.w)
+		for _, line := range strings.Split(r.Hint, "\n") {
+			fmt.Fprintf(s.w, "        %s\n", line)
+		}
 	}
 }
 

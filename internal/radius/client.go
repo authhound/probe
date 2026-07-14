@@ -38,7 +38,7 @@ func Exchange(addr string, secret string, p *Packet, timeout time.Duration) (rep
 	rtt = time.Since(start)
 	if err != nil {
 		if ne, ok := err.(net.Error); ok && ne.Timeout() {
-			return nil, nil, rtt, ErrTimeout
+			return nil, nil, rtt, &TimeoutError{LocalIP: localIP(conn)}
 		}
 		return nil, nil, rtt, err
 	}
@@ -59,3 +59,20 @@ func Exchange(addr string, secret string, p *Packet, timeout time.Duration) (rep
 // unreachable, not listening, or (very commonly) does not have this probe
 // whitelisted as a RADIUS client, in which case it silently drops the request.
 var ErrTimeout = errors.New("no reply before timeout")
+
+// TimeoutError is the concrete error Exchange returns on timeout. It carries
+// the local source IP the OS chose for the (already-dialed) socket, so callers
+// can tell the admin exactly which address to register as a RADIUS client.
+// errors.Is(err, ErrTimeout) matches it, so existing checks need no change.
+type TimeoutError struct{ LocalIP string }
+
+func (e *TimeoutError) Error() string        { return ErrTimeout.Error() }
+func (e *TimeoutError) Is(target error) bool { return target == ErrTimeout }
+
+// localIP extracts the socket's local address, without the ephemeral port.
+func localIP(conn net.Conn) string {
+	if ua, ok := conn.LocalAddr().(*net.UDPAddr); ok && ua.IP != nil {
+		return ua.IP.String()
+	}
+	return ""
+}

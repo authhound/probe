@@ -27,6 +27,31 @@ Verdict: 4 passed, 0 failed, 0 warnings
 
 Like `eapol_test` or `radtest`, but the output is readable — one command, no `wpa_supplicant` config file. Add `--json` for scripting, `--nas-port-type ethernet|wireless|virtual` to match how your real NAS presents itself, and `--server-name` to set the expected certificate name.
 
+## Step 0 — register the probe on your server (one time)
+
+Because the probe acts as a NAS, your RADIUS server must know it as a client — otherwise the server **silently drops** its requests and every check times out. Add the probe's IP and a shared secret:
+
+**FreeRADIUS** (`clients.conf`, then restart):
+
+```
+client authhound-probe {
+    ipaddr = 10.20.0.50      # the probe's IP
+    secret = <shared secret>
+}
+```
+
+**Windows NPS** — PowerShell (elevated), or NPS console → RADIUS Clients → New:
+
+```powershell
+New-NpsRadiusClient -Name "authhound-probe" -Address "10.20.0.50" -SharedSecret "<shared secret>"
+```
+
+**Cloud/hosted RADIUS:** register the probe's IP and secret in the vendor's admin UI, per their documentation.
+
+If NAT sits between the probe and the server, register the **post-NAT** source IP — the address the server actually sees. Use a dedicated secret and a least-privilege test account — never a real admin credential.
+
+Skipped this step? The probe notices: on a first-run timeout it prints this exact snippet with your detected source IP already filled in, ready to paste.
+
 ## What it checks (v1)
 
 | Check | What it proves |
@@ -264,23 +289,6 @@ The probe's whole value is that it tests from the **same place your clients live
 - **A Raspberry Pi** at a branch site — a genuinely good way to probe a remote location.
 
 > **Placement matters.** A probe on the *server* VLAN may not cross the same firewall path your *clients* do — and that path is exactly where the invisible failures hide. Put the probe where the users are.
-
-### One-time server setup
-
-Because the probe acts as a NAS, your RADIUS server must know it as a client — add its IP and a shared secret:
-
-**FreeRADIUS** (`clients.conf`):
-
-```
-client authhound-probe {
-    ipaddr = 10.20.0.50      # the probe's IP
-    secret = <shared secret>
-}
-```
-
-**Windows NPS:** NPS console → RADIUS Clients → New → the probe's IP + a shared secret.
-
-Use a dedicated secret and a least-privilege test account — never a real admin credential.
 
 ## Exit codes
 

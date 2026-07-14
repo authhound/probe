@@ -33,6 +33,7 @@ type Result struct {
 	Status   Status            `json:"status"`
 	Summary  string            `json:"summary"`          // one plain-English line
 	Detail   string            `json:"detail,omitempty"` // optional extra context
+	Hint     string            `json:"hint,omitempty"`   // multi-line, paste-ready remediation; formatting is significant, never contains secrets
 	Fields   map[string]string `json:"fields,omitempty"` // e.g. rtt_ms, tls_version
 	Duration time.Duration     `json:"duration_ns,omitempty"`
 }
