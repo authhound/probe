@@ -36,3 +36,6 @@ func (s *JSONSink) Close() error {
 }
 
 func (s *JSONSink) Failed() bool { return s.counts[check.StatusFail] > 0 }
+
+// Warned reports whether any check warned, for --strict exit handling.
+func (s *JSONSink) Warned() bool { return s.counts[check.StatusWarn] > 0 }

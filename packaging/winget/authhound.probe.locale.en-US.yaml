@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: authhound.probe
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: AuthHound
+PublisherUrl: https://authhound.com
+PublisherSupportUrl: https://github.com/authhound/probe/issues
+PackageName: authhound-probe
+PackageUrl: https://github.com/authhound/probe
+License: Apache-2.0
+LicenseUrl: https://github.com/authhound/probe/blob/main/LICENSE/
+Copyright: Copyright (c) AuthHound
+ShortDescription: Test any RADIUS server — FreeRADIUS, Windows NPS, or cloud — from inside your network.
+Description: >-
+  authhound-probe runs a real authentication against your RADIUS server from
+  inside your network, acting as a NAS (switch/AP) would, and tells you in plain
+  English which hop is broken: reachability, shared-secret verification, PAP,
+  PEAP-MSCHAPv2, EAP-TTLS, EAP-TLS, server-certificate analysis, path-MTU /
+  fragmentation, and RadSec. Read-only, no account, no telemetry — a single
+  static binary. Add --json and exit codes for scripting, RMM, and Scheduled
+  Tasks.
+Moniker: authhound-probe
+Tags:
+  - radius
+  - freeradius
+  - nps
+  - 802.1x
+  - eap
+  - peap
+  - radsec
+  - networking
+  - diagnostics
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

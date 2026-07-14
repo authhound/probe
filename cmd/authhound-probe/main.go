@@ -131,6 +131,7 @@ func cmdRadsecTest(args []string) int {
 	timeout := fs.Duration("timeout", 5*time.Second, "connection/handshake timeout")
 	jsonOut := fs.Bool("json", false, "emit results as JSON instead of text")
 	noColor := fs.Bool("no-color", false, "disable ANSI colour")
+	strict := fs.Bool("strict", false, "exit non-zero on warnings too (for scheduled monitoring)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: authhound-probe radsec test --server HOST [--client-cert cert.pem --client-key key.pem]")
 		fmt.Fprint(os.Stderr, "\nChecks a RadSec (RADIUS/TLS, TCP/2083) endpoint. Nothing leaves this host.\n\nFlags:\n")
@@ -152,15 +153,12 @@ func cmdRadsecTest(args []string) int {
 		addr += ":2083"
 	}
 
-	var sink interface {
-		check.ResultSink
-		Failed() bool
-	}
+	var sink resultSink
 	if *jsonOut {
 		sink = report.NewJSONSink(os.Stdout)
 	} else {
 		fmt.Printf("Testing RadSec endpoint %s\n\n", addr)
-		sink = report.NewTextSink(os.Stdout, !*noColor)
+		sink = report.NewTextSink(os.Stdout, report.UseColor(os.Stdout, *noColor))
 	}
 
 	results := check.RadSecReport(context.Background(), addr, *clientCert, *clientKey, *serverName, *timeout)
@@ -168,10 +166,7 @@ func cmdRadsecTest(args []string) int {
 		sink.Emit(r)
 	}
 	_ = sink.Close()
-	if sink.Failed() {
-		return 1
-	}
-	return 0
+	return exitCode(sink, *strict)
 }
 
 func cmdRadiusTest(args []string) int {
@@ -193,6 +188,7 @@ func cmdRadiusTest(args []string) int {
 	timeout := fs.Duration("timeout", 5*time.Second, "per-request timeout")
 	jsonOut := fs.Bool("json", false, "emit results as JSON instead of text")
 	noColor := fs.Bool("no-color", false, "disable ANSI colour")
+	strict := fs.Bool("strict", false, "exit non-zero on warnings too (for scheduled monitoring)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: authhound-probe radius test --server HOST --secret SECRET [--pap user:pass]")
 		fmt.Fprint(os.Stderr, "\nRuns local, read-only RADIUS/802.1X checks. Nothing leaves this host.\n\nFlags:\n")
@@ -263,15 +259,12 @@ func cmdRadiusTest(args []string) int {
 	}
 
 	// Sink: JSON for scripting, text for humans.
-	var sink interface {
-		check.ResultSink
-		Failed() bool
-	}
+	var sink resultSink
 	if *jsonOut {
 		sink = report.NewJSONSink(os.Stdout)
 	} else {
 		fmt.Printf("Testing RADIUS server %s (as NAS %q)\n\n", addr, *nasID)
-		sink = report.NewTextSink(os.Stdout, !*noColor)
+		sink = report.NewTextSink(os.Stdout, report.UseColor(os.Stdout, *noColor))
 	}
 
 	runner := check.Runner{Sink: sink}
@@ -291,7 +284,22 @@ func cmdRadiusTest(args []string) int {
 	runner.Run(context.Background(), plan)
 	_ = sink.Close()
 
-	if sink.Failed() {
+	return exitCode(sink, *strict)
+}
+
+// resultSink is the report-sink surface both subcommands use: the check.ResultSink
+// contract plus the tallies that drive the process exit code.
+type resultSink interface {
+	check.ResultSink
+	Failed() bool
+	Warned() bool
+}
+
+// exitCode maps a finished run to the process exit code: 1 if any check failed,
+// or — under --strict — if any check warned; otherwise 0. Usage errors (2) are
+// handled at the call sites before a run starts.
+func exitCode(sink resultSink, strict bool) int {
+	if sink.Failed() || (strict && sink.Warned()) {
 		return 1
 	}
 	return 0

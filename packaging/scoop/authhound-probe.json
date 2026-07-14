@@ -1,0 +1,32 @@
+{
+    "version": "0.1.0",
+    "description": "Test any RADIUS server — FreeRADIUS, Windows NPS, or cloud — from inside your network.",
+    "homepage": "https://github.com/authhound/probe",
+    "license": "Apache-2.0",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/authhound/probe/releases/download/v0.1.0/authhound-probe_windows_amd64.zip",
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+            "bin": "authhound-probe.exe"
+        },
+        "arm64": {
+            "url": "https://github.com/authhound/probe/releases/download/v0.1.0/authhound-probe_windows_arm64.zip",
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+            "bin": "authhound-probe.exe"
+        }
+    },
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/authhound/probe/releases/download/v$version/authhound-probe_windows_amd64.zip"
+            },
+            "arm64": {
+                "url": "https://github.com/authhound/probe/releases/download/v$version/authhound-probe_windows_arm64.zip"
+            }
+        },
+        "hash": {
+            "url": "$baseurl/checksums.txt"
+        }
+    }
+}

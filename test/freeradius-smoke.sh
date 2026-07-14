@@ -15,10 +15,14 @@ SECRET="testing123"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"; docker rm -f ah-freeradius ah-freeradius-nc >/dev/null 2>&1 || true' EXIT
 
-# One test user for the PAP check. This file replaces the default authorize
-# file; a single Cleartext-Password line is all the pap module needs.
+# One test user for the PAP check, plus a machine identity for the NPS-style
+# machine-auth check. This file replaces the default authorize file; a single
+# Cleartext-Password line is all the pap module needs. FreeRADIUS treats the
+# "host/PC-01.corp.local" identity like any other username — exactly the path a
+# Windows computer account takes through PEAP-MSCHAPv2.
 cat > "$work/authorize" <<'EOF'
 alice Cleartext-Password := "pw"
+host/PC-01.corp.local Cleartext-Password := "machinepw"
 EOF
 
 # A minimal RadSec (RADIUS/TLS) listener on TCP/2083 so we can test 'radsec test'
@@ -81,6 +85,13 @@ echo "== correct secret + PAP + PEAP-MSCHAPv2 + EAP-TTLS + EAP-TLS + MTU (expect
 "$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" \
   --pap 'alice:pw' --peap 'alice:pw' --ttls 'alice:pw' \
   --client-cert "$work/cert.pem" --client-key "$work/key.pem" --mtu --no-color || true
+
+echo
+echo "== machine auth: host/ identity via PEAP-MSCHAPv2 (NPS-style, expect PASS) =="
+# A computer account authenticates with a "host/NAME.domain" identity and the
+# machine-account password — no colon in the identity, so it parses cleanly.
+"$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" \
+  --nas-port-type ethernet --peap 'host/PC-01.corp.local:machinepw' --no-color || true
 
 echo
 echo "== same, but secret via AUTHHOUND_SECRET + password via --password-file (expect PASS) =="

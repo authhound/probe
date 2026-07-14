@@ -70,6 +70,9 @@ func (s *TextSink) Close() error {
 // Failed reports whether any check failed, for the process exit code.
 func (s *TextSink) Failed() bool { return s.counts[check.StatusFail] > 0 }
 
+// Warned reports whether any check warned, for --strict exit handling.
+func (s *TextSink) Warned() bool { return s.counts[check.StatusWarn] > 0 }
+
 func wrap(str string, width int, indent string) string {
 	var out, line string
 	for _, w := range splitWords(str) {

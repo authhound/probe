@@ -85,7 +85,7 @@ FreeRADIUS — add to clients.conf and restart:
       secret = %[2]s
   }
 
-Windows NPS — PowerShell (elevated):
+Windows NPS — PowerShell (elevated), or NPS console → RADIUS Clients → New:
   New-NpsRadiusClient -Name "authhound-probe" -Address "%[1]s" -SharedSecret "%[2]s"
 
 Cloud/hosted RADIUS — register client IP %[1]s and the same shared

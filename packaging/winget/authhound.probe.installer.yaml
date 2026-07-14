@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: authhound.probe
+PackageVersion: 0.1.0
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: authhound-probe.exe
+    PortableCommandAlias: authhound-probe
+Commands:
+  - authhound-probe
+ReleaseDate: 2026-01-01
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/authhound/probe/releases/download/v0.1.0/authhound-probe_windows_amd64.zip
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+  - Architecture: arm64
+    InstallerUrl: https://github.com/authhound/probe/releases/download/v0.1.0/authhound-probe_windows_arm64.zip
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ManifestType: installer
+ManifestVersion: 1.6.0
