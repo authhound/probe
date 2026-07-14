@@ -41,7 +41,7 @@ func (c PAP) Run(ctx context.Context, t Target) Result {
 	reply, _, _, err := radius.Exchange(t.Address, t.Secret, p, t.Timeout)
 	if err != nil {
 		if errors.Is(err, radius.ErrTimeout) {
-			return Result{Check: "pap-auth", Status: StatusSkip, Summary: "No reply — resolve reachability first"}
+			return markTimeout(Result{Check: "pap-auth", Status: StatusSkip, Summary: "No reply — resolve reachability first"})
 		}
 		return Result{Check: "pap-auth", Status: StatusFail, Summary: "PAP exchange failed: " + err.Error()}
 	}

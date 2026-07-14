@@ -2,6 +2,7 @@ package check
 
 import (
 	"context"
+	"errors"
 
 	"github.com/authhound/probe/internal/radius"
 )
@@ -31,13 +32,17 @@ func (c ServerCert) Run(ctx context.Context, t Target) Result {
 
 	captured, err := sess.InspectServerCert(ctx, c.ServerName)
 	if err != nil {
-		return Result{
+		r := Result{
 			Check: "server-cert", Status: StatusSkip,
 			Summary: "Could not inspect the server certificate",
 			Detail: "The PEAP/TLS handshake didn't get far enough to read the certificate: " +
 				err.Error() + ". This is expected if the server doesn't offer PEAP or EAP-TLS, " +
 				"or if reachability/secret checks above failed.",
 		}
+		if errors.Is(err, radius.ErrTimeout) {
+			r = markTimeout(r)
+		}
+		return r
 	}
 	return analyzeCert("server-cert", captured.Chain, captured.TLSVersion)
 }

@@ -38,6 +38,26 @@ func TestExitCode(t *testing.T) {
 	}
 }
 
+// TestCountFlagValidation pins the --count contract: out-of-range counts and a
+// stray --interval are usage errors (exit 2) caught before any credential
+// prompting or network I/O.
+func TestCountFlagValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"count too high", []string{"--server", "192.0.2.1", "--count", "51"}},
+		{"count zero", []string{"--server", "192.0.2.1", "--count", "0"}},
+		{"count negative", []string{"--server", "192.0.2.1", "--count", "-3"}},
+		{"interval without count", []string{"--server", "192.0.2.1", "--interval", "5s"}},
+	}
+	for _, c := range cases {
+		if got := cmdRadiusTest(c.args); got != 2 {
+			t.Errorf("%s: exit = %d, want 2", c.name, got)
+		}
+	}
+}
+
 func TestResolveVersion(t *testing.T) {
 	orig := version
 	t.Cleanup(func() { version = orig })

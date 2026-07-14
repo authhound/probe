@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 
 SECRET="testing123"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"; docker rm -f ah-freeradius ah-freeradius-nc >/dev/null 2>&1 || true' EXIT
+trap 'rm -rf "$work"; docker rm -f ah-freeradius ah-freeradius-nc ah-freeradius-flaky ah-netem >/dev/null 2>&1 || true' EXIT
 
 # One test user for the PAP check, plus a machine identity for the NPS-style
 # machine-auth check. This file replaces the default authorize file; a single
@@ -208,6 +208,68 @@ echo "$json" | grep -q '"hint"' || { echo "FAIL: --json missing hint field"; exi
 echo "$json" | grep -q '"source_ip": "127.0.0.1"' || { echo "FAIL: --json missing source_ip field"; exit 1; }
 if echo "$json" | grep -q "$SECRET"; then echo "FAIL: secret leaked into JSON output"; exit 1; fi
 echo "OK: registration hint present with detected IP; secret not leaked"
+
+echo
+echo "== flaky server: --count against induced packet loss (tc netem) =="
+# A second FreeRADIUS on a bridge network (so netem can shape just its traffic,
+# published on 127.0.0.1:11812) with a sidecar dropping ~25% of its replies and
+# adding 30ms±20ms delay. This is the fixture for `--count`: intermittent loss
+# and jitter that a single-shot run can't see.
+docker rm -f ah-freeradius-nc >/dev/null 2>&1 || true
+cat > "$work/clients-flaky" <<'EOF'
+client lab {
+	ipaddr = 0.0.0.0/0
+	secret = testing123
+}
+EOF
+docker run -d --rm --name ah-freeradius-flaky -p 127.0.0.1:11812:1812/udp \
+  -v "$work/authorize:/etc/raddb/mods-config/files/authorize:ro" \
+  -v "$work/clients-flaky:/etc/raddb/clients.conf:ro" \
+  freeradius/freeradius-server:latest -fxx -l stdout >/dev/null
+docker run -d --rm --name ah-netem --network "container:ah-freeradius-flaky" \
+  --cap-add NET_ADMIN alpine:3 sh -c \
+  "apk add --no-cache iproute2 >/dev/null && tc qdisc replace dev eth0 root netem loss 25% delay 30ms 20ms && sleep infinity" >/dev/null
+for i in $(seq 1 30); do
+  if docker logs ah-freeradius-flaky 2>&1 | grep -q "Ready to process requests"; then break; fi
+  sleep 0.5
+done
+for i in $(seq 1 30); do
+  if docker exec ah-netem tc qdisc show dev eth0 2>/dev/null | grep -q netem; then break; fi
+  sleep 0.5
+done
+
+echo
+echo "== --count 10 with 25% loss (expect lost requests, jitter, exit 1) =="
+set +e
+count_out="$("$work/authhound-probe" radius test --server 127.0.0.1:11812 --secret "$SECRET" \
+  --pap 'alice:pw' --count 10 --interval 1s --timeout 2s --no-color)"; count_rc=$?
+set -e
+echo "$count_out"
+echo "$count_out" | grep -q "Aggregate over 10 runs" || { echo "FAIL: missing aggregate block"; exit 1; }
+echo "$count_out" | grep -q "lost" || { echo "FAIL: expected lost requests under 25% packet loss"; exit 1; }
+[ "$count_rc" -eq 1 ] || { echo "FAIL: lost requests should exit 1, got $count_rc"; exit 1; }
+echo "OK: aggregate names the loss; exit 1"
+
+echo
+echo "== --count --json exposes repeat block (iterations + aggregate) =="
+set +e
+cjson="$("$work/authhound-probe" radius test --server 127.0.0.1:11812 --secret "$SECRET" \
+  --pap 'alice:pw' --count 5 --interval 1s --timeout 2s --json)"
+set -e
+echo "$cjson" | grep -q '"repeat"' || { echo "FAIL: --json missing repeat block"; exit 1; }
+echo "$cjson" | grep -q '"completed": 5' || { echo "FAIL: repeat.completed should be 5"; exit 1; }
+echo "$cjson" | grep -q '"aggregate"' || { echo "FAIL: repeat.aggregate missing"; exit 1; }
+echo "$cjson" | grep -q '"iterations"' || { echo "FAIL: repeat.iterations missing"; exit 1; }
+echo "$cjson" | grep -q '"latency_ms"' || { echo "FAIL: aggregate latency stats missing"; exit 1; }
+if echo "$cjson" | grep -q "$SECRET"; then echo "FAIL: secret leaked into --count JSON"; exit 1; fi
+echo "OK: repeat block present with per-iteration results and aggregate stats"
+
+echo
+echo "== --interval below the safety floor gets stretched (expect a note) =="
+stretch_note="$("$work/authhound-probe" radius test --server 127.0.0.1:11812 --secret "$SECRET" \
+  --count 2 --interval 100ms --timeout 2s --no-color 2>&1 >/dev/null || true)"
+echo "$stretch_note" | grep -q "safety floor" || { echo "FAIL: expected the interval-stretch note"; exit 1; }
+echo "OK: sub-floor interval stretched and announced"
 
 echo
 echo "== done; tearing down FreeRADIUS =="

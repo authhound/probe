@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 
 	"github.com/authhound/probe/internal/radius"
@@ -64,7 +65,11 @@ func (c EAPTLS) Run(ctx context.Context, t Target) Result {
 
 	res, err := sess.AuthEAPTLS(ctx, cert, c.ServerName)
 	if err != nil {
-		return Result{Check: "eap-tls", Status: StatusFail, Summary: "EAP-TLS exchange failed: " + err.Error()}
+		r := Result{Check: "eap-tls", Status: StatusFail, Summary: "EAP-TLS exchange failed: " + err.Error()}
+		if errors.Is(err, radius.ErrTimeout) {
+			r = markTimeout(r)
+		}
+		return r
 	}
 
 	fields := map[string]string{"identity": identity}

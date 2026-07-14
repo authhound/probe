@@ -22,3 +22,39 @@ services:
     volumes:
       - ./config/authorize:/etc/raddb/mods-config/files/authorize:ro
       - ./config/radsec:/etc/raddb/sites-enabled/radsec:ro
+
+  # Flaky profile: the same FreeRADIUS behind induced packet loss and jitter,
+  # for exercising `radius test --count` against genuinely intermittent
+  # failures. Runs on a bridge network (not host) so netem can shape just this
+  # server's traffic; published on 127.0.0.1:11812.
+  #
+  #   docker compose -f test/lab/docker-compose.yml --profile flaky up
+  #   authhound-probe radius test --server 127.0.0.1:11812 --secret testing123 \
+  #       --pap alice:pw --count 10
+  #
+  # Requests reach it from the Docker bridge gateway, so clients-flaky accepts
+  # any source IP (throwaway lab secret, never production).
+  freeradius-flaky:
+    image: freeradius/freeradius-server:latest
+    profiles: [flaky]
+    command: ["-fxx", "-l", "stdout"]
+    ports:
+      - "127.0.0.1:11812:1812/udp"
+    volumes:
+      - ./config/authorize:/etc/raddb/mods-config/files/authorize:ro
+      - ./config/clients-flaky:/etc/raddb/clients.conf:ro
+
+  # netem sidecar: joins the flaky server's network namespace and drops ~25% of
+  # its replies with 30ms±20ms delay — lost requests and latency jitter, the two
+  # things --count exists to expose. NET_ADMIN is scoped to the sidecar and that
+  # one namespace, not the host.
+  netem:
+    image: alpine:3
+    profiles: [flaky]
+    network_mode: "service:freeradius-flaky"
+    cap_add: [NET_ADMIN]
+    command: >
+      sh -c "apk add --no-cache iproute2 >/dev/null
+      && tc qdisc replace dev eth0 root netem loss 25% delay 30ms 20ms
+      && echo 'netem active: 25% loss, 30ms±20ms delay'
+      && sleep infinity"

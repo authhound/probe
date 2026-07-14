@@ -23,6 +23,7 @@ type JSONSink struct {
 	w       io.Writer
 	results []check.Result
 	counts  map[check.Status]int
+	repeat  *repeatDoc // non-nil only in repeat mode (--count); see SetRepeat
 }
 
 func NewJSONSink(w io.Writer) *JSONSink {
@@ -50,9 +51,11 @@ func (s *JSONSink) Close() error {
 		SchemaVersion string         `json:"schema_version"`
 		Results       []check.Result `json:"results"`
 		Summary       summaryCounts  `json:"summary"`
+		Repeat        *repeatDoc     `json:"repeat,omitempty"` // additive: only with --count
 	}{
 		SchemaVersion: SchemaVersion,
 		Results:       s.results,
+		Repeat:        s.repeat,
 		Summary: summaryCounts{
 			Pass: s.counts[check.StatusPass],
 			Fail: s.counts[check.StatusFail],

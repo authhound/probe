@@ -45,6 +45,16 @@ $ docker compose -f test/lab/docker-compose.yml up        # Ctrl-C to stop
 
 It serves classic RADIUS/UDP on `1812` and RadSec on `2083`.
 
+With the `flaky` profile it also starts a second FreeRADIUS behind ~25% induced
+packet loss and jitter (tc netem in a sidecar), published on `127.0.0.1:11812` —
+the fixture for `radius test --count`:
+
+```console
+$ docker compose -f test/lab/docker-compose.yml --profile flaky up
+$ go run ./cmd/authhound-probe radius test \
+    --server 127.0.0.1:11812 --secret testing123 --pap alice:pw --count 10
+```
+
 ### Run the UDP checks
 
 ```console

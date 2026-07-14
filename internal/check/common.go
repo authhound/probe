@@ -33,3 +33,17 @@ func addCommon(p *radius.Packet, t Target) {
 		p.Add(a.Type, a.Value)
 	}
 }
+
+// TimeoutField marks a Result whose underlying request got no reply, so
+// aggregate reporting (--count) can count lost requests separately from
+// processed rejections. Additive within schema major "1".
+const TimeoutField = "timeout"
+
+// markTimeout tags r as a timeout result (see TimeoutField).
+func markTimeout(r Result) Result {
+	if r.Fields == nil {
+		r.Fields = map[string]string{}
+	}
+	r.Fields[TimeoutField] = "true"
+	return r
+}

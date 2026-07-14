@@ -189,6 +189,8 @@ $ authhound-probe radsec test --server radius.corp.com \
 | `--password-file FILE` | Password for a `user`-only `--pap/--peap/--ttls`, from a file (non-interactive). |
 | `--client-cert FILE` `--client-key FILE` | Run an EAP-TLS test with this client certificate + key (PEM). |
 | `--mtu` | Run the path-MTU / fragmentation probe (sends a few padded packets). |
+| `--count N` | Run the checks `N` times (2–50) and report aggregate statistics — see [Chasing intermittent failures](#chasing-intermittent-failures). |
+| `--interval DURATION` | Pause between `--count` iterations (default `2s`; a hard-coded safety floor applies). |
 | `--nas-port-type wireless\|ethernet\|virtual` | How the probe presents itself, so server policies match (default `wireless`). |
 | `--server-name NAME` | Expected server-certificate name (TLS SNI). |
 | `--nas-id NAME` | NAS-Identifier to send (default `authhound-probe`). |
@@ -196,6 +198,53 @@ $ authhound-probe radsec test --server radius.corp.com \
 | `--json` | Machine-readable output for scripts / RMM ([schema](docs/json-schema.md)). |
 | `--strict` | Exit non-zero on **warnings** too (e.g. a soon-to-expire cert), for scheduled monitoring. |
 | `--no-color` | Force plain output. Colour is auto-detected otherwise — see [Colour](#colour-and-windows-terminals). |
+
+### Chasing intermittent failures
+
+A single-shot PASS proves nothing about the failure that hits one user in ten.
+When the complaint is "Wi-Fi drops people randomly" or "auth works, except when
+it doesn't", run the same checks repeatedly and look at the distribution:
+
+```console
+$ export AUTHHOUND_SECRET='shared-secret'
+$ authhound-probe radius test --server radius.corp.com --peap alice --count 10
+
+Running 10 iterations, 2s apart
+
+run  1/10  reachability PASS 3ms · shared-secret PASS · peap-mschapv2 PASS
+run  2/10  reachability PASS 41ms · shared-secret PASS · peap-mschapv2 LOST (no reply)
+run  3/10  reachability PASS 2ms · shared-secret PASS · peap-mschapv2 PASS
+...
+
+Aggregate over 10 runs:
+
+PASS  reachability: 10/10 succeeded — stable
+        Latency over 10 answered runs: min 2ms, median 3ms, p95 41ms, max 41ms.
+PASS  shared-secret: 10/10 succeeded — stable
+FAIL  peap-mschapv2: 8/10 succeeded, 2/10 requests lost — consistent with an
+        unstable path or an overloaded/failing server, not a config error
+        Latency over 8 answered runs: min 9ms, median 12ms, p95 96ms, max 96ms.
+```
+
+How to read it:
+
+- **Requests lost** (timeouts) with the rest succeeding → the configuration is
+  fine; suspect the network path or an overloaded/failing server. A p95 far
+  above the median is the same story told by latency.
+- **Failed every run** → not flaky at all; it's a configuration problem
+  (secret, credentials, policy) that a single run would also have caught.
+- Exit code stays `1` if *any* iteration failed, so a flaky server fails a
+  scripted run loudly instead of depending on which iteration you got.
+
+Iterations run sequentially, `--interval` apart (default `2s`). The probe's
+hard-coded rate ceiling still bounds everything: intervals below the safety
+floor are stretched (and the stretch announced), and `--count` is capped at 50.
+This is a diagnosis loop you babysit, not monitoring — it never schedules,
+repeats forever, or stores anything between runs.
+
+With `--json`, each iteration's results plus per-check aggregate statistics
+(success counts, timeouts, latency min/median/p95/max) appear in an additive
+`repeat` block — see the [schema](docs/json-schema.md).
 
 ### Where credentials come from
 

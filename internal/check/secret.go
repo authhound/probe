@@ -35,13 +35,13 @@ func (SharedSecret) Run(ctx context.Context, t Target) Result {
 	_, raw, _, err := radius.Exchange(t.Address, t.Secret, p, t.Timeout)
 	if err != nil {
 		if errors.Is(err, radius.ErrTimeout) {
-			return Result{
+			return markTimeout(Result{
 				Check: "shared-secret", Status: StatusSkip,
 				Summary: "Could not verify the shared secret — no reply",
 				Detail: "Most RADIUS servers silently drop requests when the secret is " +
 					"wrong OR when the client isn't whitelisted, so a timeout alone can't " +
 					"tell them apart. Fix reachability/whitelisting first, then re-run.",
-			}
+			})
 		}
 		return Result{Check: "shared-secret", Status: StatusSkip, Summary: "Could not verify the shared secret: " + err.Error()}
 	}
