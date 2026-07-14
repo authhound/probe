@@ -1,0 +1,47 @@
+{
+  "schema_version": "1",
+  "results": [
+    {
+      "check": "reachability",
+      "status": "pass",
+      "summary": "RADIUS server answered",
+      "fields": {
+        "rtt_ms": "3"
+      },
+      "duration_ns": 3000000
+    },
+    {
+      "check": "shared-secret",
+      "status": "fail",
+      "summary": "Shared secret appears wrong",
+      "detail": "The Message-Authenticator did not validate.",
+      "hint": "Check the secret on both the NAS and the server:\n  secret = \u003csame on both sides\u003e"
+    },
+    {
+      "check": "server-cert",
+      "status": "warn",
+      "summary": "Server certificate expires in 10 days (2026-07-24)",
+      "fields": {
+        "not_after": "2026-07-24",
+        "tls_version": "TLS 1.3"
+      }
+    },
+    {
+      "check": "mtu",
+      "status": "info",
+      "summary": "Largest un-fragmented EAP packet: 1400 bytes"
+    },
+    {
+      "check": "eap-tls",
+      "status": "skip",
+      "summary": "No client certificate given"
+    }
+  ],
+  "summary": {
+    "pass": 1,
+    "fail": 1,
+    "warn": 1,
+    "info": 1,
+    "skip": 1
+  }
+}

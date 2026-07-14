@@ -136,6 +136,7 @@ func cmdRadsecTest(args []string) int {
 		fmt.Fprintln(os.Stderr, "Usage: authhound-probe radsec test --server HOST [--client-cert cert.pem --client-key key.pem]")
 		fmt.Fprint(os.Stderr, "\nChecks a RadSec (RADIUS/TLS, TCP/2083) endpoint. Nothing leaves this host.\n\nFlags:\n")
 		fs.PrintDefaults()
+		fmt.Fprint(os.Stderr, exitCodeHelp)
 	}
 	_ = fs.Parse(args)
 
@@ -193,6 +194,7 @@ func cmdRadiusTest(args []string) int {
 		fmt.Fprintln(os.Stderr, "Usage: authhound-probe radius test --server HOST --secret SECRET [--pap user:pass]")
 		fmt.Fprint(os.Stderr, "\nRuns local, read-only RADIUS/802.1X checks. Nothing leaves this host.\n\nFlags:\n")
 		fs.PrintDefaults()
+		fmt.Fprint(os.Stderr, exitCodeHelp)
 	}
 	_ = fs.Parse(args)
 
@@ -294,6 +296,19 @@ type resultSink interface {
 	Failed() bool
 	Warned() bool
 }
+
+// exitCodeHelp is appended to --help for both subcommands. The 0/1/2 contract is
+// stable — RMM scripts and Task Scheduler depend on it — so it is documented in
+// one place and shown identically everywhere.
+const exitCodeHelp = `
+Exit codes:
+  0  all checks passed (warnings allowed unless --strict)
+  1  a check FAILED — or, under --strict, a WARN (e.g. a cert expiring soon)
+  2  usage error (bad flags or missing --server)
+
+With --json the same result is machine-readable: .summary.fail / .summary.warn
+counts and per-check .results[].status. Schema: docs/json-schema.md.
+`
 
 // exitCode maps a finished run to the process exit code: 1 if any check failed,
 // or — under --strict — if any check warned; otherwise 0. Usage errors (2) are

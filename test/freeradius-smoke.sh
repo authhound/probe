@@ -45,6 +45,26 @@ listen {
 		require_client_cert = yes
 	}
 }
+
+# A second RadSec listener on 2084 that presents a deliberately short-lived
+# server certificate, so 'radsec test' produces a cert-expiry WARN. This is the
+# fixture for the --strict exit-code flip: a WARN (not a FAIL) that scripts must
+# be able to alarm on. Same clients/CA as above; only the server cert differs.
+listen {
+	type = auth
+	ipaddr = *
+	port = 2084
+	proto = tcp
+	clients = radsec
+	virtual_server = default
+	tls {
+		private_key_file = ${certdir}/server-short.pem
+		certificate_file = ${certdir}/server-short.pem
+		ca_file = ${cadir}/ca.pem
+		fragment_size = 8192
+		require_client_cert = yes
+	}
+}
 clients radsec {
 	client 127.0.0.1 {
 		ipaddr = 127.0.0.1
@@ -54,10 +74,21 @@ clients radsec {
 }
 EOF
 
+# The short-lived (10-day) self-signed server cert for the 2084 listener. Cert +
+# unencrypted key concatenated into one PEM (what FreeRADIUS's *_file settings
+# expect). 10 days is inside the probe's 21-day cert-expiry WARN window, and a
+# lone self-signed leaf is NOT treated as an incomplete chain, so the only
+# non-PASS result is the expiry WARN — a clean fixture for the --strict flip.
+short_dir="$work/short"; mkdir -p "$short_dir"
+openssl req -x509 -newkey rsa:2048 -keyout "$short_dir/key.pem" -out "$short_dir/cert.pem" \
+  -days 10 -nodes -subj "/CN=radsec-short.corp.local" >/dev/null 2>&1
+cat "$short_dir/cert.pem" "$short_dir/key.pem" > "$work/server-short.pem"
+
 echo "== starting FreeRADIUS (debug, threaded for RadSec) =="
 docker run -d --rm --name ah-freeradius --network host \
   -v "$work/authorize:/etc/raddb/mods-config/files/authorize:ro" \
   -v "$work/radsec:/etc/raddb/sites-enabled/radsec:ro" \
+  -v "$work/server-short.pem:/etc/raddb/certs/server-short.pem:ro" \
   freeradius/freeradius-server:latest -fxx -l stdout >/dev/null
 
 # Wait for it to be listening.
@@ -115,6 +146,35 @@ echo
 echo "== RadSec (RADIUS/TLS 2083) with client cert (expect TLS + RADIUS PASS) =="
 "$work/authhound-probe" radsec test --server 127.0.0.1 \
   --client-cert "$work/cert.pem" --client-key "$work/key.pem" --no-color || true
+
+echo
+echo "== --strict flips exit code on a cert-expiry WARN (RadSec 2084, 10-day cert) =="
+# The 2084 listener presents a 10-day server cert -> the probe WARNs (no FAIL).
+# Without --strict that is exit 0 (warning is not breakage); with --strict it is
+# exit 1 (a scheduled monitor must alarm on a soon-to-expire cert). This is the
+# MSP/RMM machine contract the task hinges on.
+# set +e around the runs so the expected nonzero exit under --strict doesn't trip
+# the script's own `set -e` before we can read $?.
+set +e
+warn_out="$("$work/authhound-probe" radsec test --server 127.0.0.1:2084 \
+  --client-cert "$work/cert.pem" --client-key "$work/key.pem" --no-color)"; warn_rc=$?
+"$work/authhound-probe" radsec test --server 127.0.0.1:2084 \
+  --client-cert "$work/cert.pem" --client-key "$work/key.pem" --no-color --strict >/dev/null; strict_rc=$?
+set -e
+echo "$warn_out"
+echo "$warn_out" | grep -qi "certificate expires in" || { echo "FAIL: expected a cert-expiry WARN"; exit 1; }
+[ "$warn_rc" -eq 0 ] || { echo "FAIL: warning-only run should exit 0 without --strict, got $warn_rc"; exit 1; }
+[ "$strict_rc" -eq 1 ] || { echo "FAIL: --strict should exit 1 on a WARN, got $strict_rc"; exit 1; }
+echo "OK: exit 0 without --strict, exit 1 with --strict on the same cert-expiry WARN"
+
+echo
+echo "== --json exposes schema_version + always-present per-status counts =="
+sjson="$("$work/authhound-probe" radsec test --server 127.0.0.1:2084 \
+  --client-cert "$work/cert.pem" --client-key "$work/key.pem" --json)"
+echo "$sjson" | grep -q '"schema_version": "1"' || { echo "FAIL: --json missing schema_version"; exit 1; }
+echo "$sjson" | grep -q '"warn": 1' || { echo "FAIL: --json summary.warn should be 1"; exit 1; }
+echo "$sjson" | grep -q '"fail": 0' || { echo "FAIL: --json summary.fail should be present as 0"; exit 1; }
+echo "OK: schema_version present; per-status counts addressable (warn=1, fail=0)"
 
 echo
 echo "== unwhitelisted probe (fresh server, no client entry -> expect registration hint) =="

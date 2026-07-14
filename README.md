@@ -193,7 +193,7 @@ $ authhound-probe radsec test --server radius.corp.com \
 | `--server-name NAME` | Expected server-certificate name (TLS SNI). |
 | `--nas-id NAME` | NAS-Identifier to send (default `authhound-probe`). |
 | `--timeout DURATION` | Per-request timeout (default `5s`). |
-| `--json` | Machine-readable output for scripts / RMM. |
+| `--json` | Machine-readable output for scripts / RMM ([schema](docs/json-schema.md)). |
 | `--strict` | Exit non-zero on **warnings** too (e.g. a soon-to-expire cert), for scheduled monitoring. |
 | `--no-color` | Force plain output. Colour is auto-detected otherwise — see [Colour](#colour-and-windows-terminals). |
 
@@ -359,9 +359,15 @@ The probe's whole value is that it tests from the **same place your clients live
 
 ## Exit codes
 
-`0` all checks passed · `1` at least one check failed · `2` usage error. Pair with `--json` for monitoring scripts and RMM integrations.
+| Code | Meaning |
+|---|---|
+| `0` | All checks passed. **Warnings are allowed** unless `--strict`. |
+| `1` | At least one check **failed** — or, under `--strict`, at least one **warning**. |
+| `2` | Usage error (bad flags, missing `--server`). No JSON is emitted in this case. |
 
-By default a **warning** (e.g. a certificate expiring soon) does not change the exit code — only a hard failure does. Add `--strict` to make warnings exit `1` too, so a scheduled monitor pages on "still working, but about to break," not just on outright breakage.
+This `0`/`1`/`2` contract is stable — RMM scripts and Task Scheduler can rely on it. By default a **warning** (e.g. a certificate expiring soon) does not change the exit code — only a hard failure does. Add `--strict` to make warnings exit `1` too, so a scheduled monitor pages on "still working, but about to break," not just on outright breakage — a cert about to lapse is exactly what an RMM job should alarm on.
+
+Pair with `--json` for monitoring scripts and RMM integrations: the same result is machine-readable, with per-status counts (`.summary.fail`, `.summary.warn`, always present even when zero) and per-check status (`.results[].status`). The full document is versioned and documented in **[docs/json-schema.md](docs/json-schema.md)** — the top-level `schema_version` lets you pin the shape you coded against.
 
 ## Running as a Windows Scheduled Task
 
