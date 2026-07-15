@@ -54,7 +54,7 @@ func RadSecReport(ctx context.Context, addr, certFile, keyFile, serverName strin
 	}
 
 	if len(res.Cert) > 0 {
-		out = append(out, analyzeCert("radsec-cert", res.Cert, res.TLSVersion))
+		out = append(out, analyzeCert("radsec-cert", res.Cert, res.TLSVersion, serverName))
 	}
 
 	if res.TLSOK {

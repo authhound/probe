@@ -8,10 +8,11 @@ import (
 )
 
 // ServerCert establishes the PEAP outer TLS tunnel and inspects the RADIUS
-// server's certificate — expiry, chain completeness, and TLS version. Expired
-// or soon-to-expire server certificates are the classic "Wi-Fi died overnight
-// and nothing was changed" outage; a missing intermediate breaks clients that
-// don't already cache it.
+// server's certificate — expiry, chain completeness, name (when ServerName is
+// given), and TLS version. Expired or soon-to-expire server certificates are
+// the classic "Wi-Fi died overnight and nothing was changed" outage; a missing
+// intermediate breaks clients that don't already cache it. With no ServerName
+// the name check is skipped and the result is a WARN, never a silent "valid".
 //
 // This is read-only: the probe receives the certificate during the handshake
 // and stops before sending any credential or client certificate.
@@ -45,5 +46,5 @@ func (c ServerCert) Run(ctx context.Context, t Target) Result {
 		}
 		return r
 	}
-	return analyzeCert("server-cert", captured.Chain, captured.TLSVersion)
+	return analyzeCert("server-cert", captured.Chain, captured.TLSVersion, c.ServerName)
 }

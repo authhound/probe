@@ -90,8 +90,11 @@ EOF
 # lone self-signed leaf is NOT treated as an incomplete chain, so the only
 # non-PASS result is the expiry WARN — a clean fixture for the --strict flip.
 short_dir="$work/short"; mkdir -p "$short_dir"
+# The SAN makes this cert also the fixture for --server-name validation: a
+# matching name, a mismatching one, and the flag omitted are all deterministic.
 openssl req -x509 -newkey rsa:2048 -keyout "$short_dir/key.pem" -out "$short_dir/cert.pem" \
-  -days 10 -nodes -subj "/CN=radsec-short.corp.local" >/dev/null 2>&1
+  -days 10 -nodes -subj "/CN=radsec-short.corp.local" \
+  -addext "subjectAltName = DNS:radsec-short.corp.local" >/dev/null 2>&1
 cat "$short_dir/cert.pem" "$short_dir/key.pem" > "$work/server-short.pem"
 
 echo "== starting FreeRADIUS (debug, threaded for RadSec) =="
@@ -288,6 +291,44 @@ echo "$warn_out" | grep -qi "certificate expires in" || { echo "FAIL: expected a
 [ "$warn_rc" -eq 0 ] || { echo "FAIL: warning-only run should exit 0 without --strict, got $warn_rc"; exit 1; }
 [ "$strict_rc" -eq 1 ] || { echo "FAIL: --strict should exit 1 on a WARN, got $strict_rc"; exit 1; }
 echo "OK: exit 0 without --strict, exit 1 with --strict on the same cert-expiry WARN"
+
+echo
+echo "== --server-name: match, mismatch (FAIL, exit 1), and omitted (skipped) =="
+# Against the 2084 listener whose cert carries SAN radsec-short.corp.local.
+# Matching name: the run still WARNs (10-day expiry outranks the name verdict)
+# but --json must record name_validation=match. Wrong name: a hard FAIL, exit 1,
+# listing the names the cert is actually valid for. Omitted: name_validation=
+# skipped — the probe must never imply the name was checked when it wasn't.
+set +e
+nv_match="$("$work/authhound-probe" radsec test --server 127.0.0.1:2084 --server-name radsec-short.corp.local \
+  --client-cert "$work/cert.pem" --client-key "$work/key.pem" --json)"; nv_match_rc=$?
+nv_bad="$("$work/authhound-probe" radsec test --server 127.0.0.1:2084 --server-name wrong.corp.local \
+  --client-cert "$work/cert.pem" --client-key "$work/key.pem" --no-color)"; nv_bad_rc=$?
+nv_skip="$("$work/authhound-probe" radsec test --server 127.0.0.1:2084 \
+  --client-cert "$work/cert.pem" --client-key "$work/key.pem" --json)"; nv_skip_rc=$?
+set -e
+echo "$nv_match" | grep -q '"name_validation": "match"' || { echo "FAIL: matching --server-name should record name_validation=match"; exit 1; }
+[ "$nv_match_rc" -eq 0 ] || { echo "FAIL: matching name (WARN-only run) should exit 0, got $nv_match_rc"; exit 1; }
+echo "$nv_bad" | grep -qi "does not match the expected name" || { echo "FAIL: wrong --server-name should FAIL with a mismatch summary"; exit 1; }
+echo "$nv_bad" | grep -q "radsec-short.corp.local" || { echo "FAIL: mismatch detail should list the names the cert is valid for"; exit 1; }
+[ "$nv_bad_rc" -eq 1 ] || { echo "FAIL: a name mismatch should exit 1, got $nv_bad_rc"; exit 1; }
+echo "$nv_skip" | grep -q '"name_validation": "skipped"' || { echo "FAIL: omitted --server-name should record name_validation=skipped"; exit 1; }
+[ "$nv_skip_rc" -eq 0 ] || { echo "FAIL: skipped-name run (WARNs only) should exit 0, got $nv_skip_rc"; exit 1; }
+echo "OK: name match recorded; mismatch FAILs (exit 1) and names the SANs; omitted flag is reported as skipped, never as valid"
+
+echo
+echo "== no --server-name on radius test: server-cert WARNs that the name check was skipped =="
+# The EAP server-cert check must say so out loud in text, and never print the
+# old unqualified "valid" line for a run that skipped name validation.
+set +e
+nv_radius="$("$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" --no-color)"
+nv_radius_json="$("$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" --json)"
+set -e
+echo "$nv_radius_json" | grep -q '"name_validation": "skipped"' || { echo "FAIL: radius-test server-cert should record name_validation=skipped"; exit 1; }
+if echo "$nv_radius" | grep -q "Server certificate valid .* chain looks complete"; then
+  echo "$nv_radius" | grep -q "name matches" || { echo "FAIL: an unqualified 'valid' verdict without name validation"; exit 1; }
+fi
+echo "OK: server-cert without --server-name never claims an unqualified valid"
 
 echo
 echo "== --json exposes schema_version + always-present per-status counts =="

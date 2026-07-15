@@ -12,7 +12,7 @@ A RADIUS server only logs the requests that *reach* it. A huge class of 802.1X f
 
 ```console
 $ export AUTHHOUND_SECRET='shared-secret'   # kept out of shell history and `ps`
-$ authhound-probe radius test --server radius.corp.com --peap alice
+$ authhound-probe radius test --server radius.corp.com --peap alice --server-name radius.corp.com
 Enter password for alice:
 
 Testing RADIUS server radius.corp.com:1812 (as NAS "authhound-probe")
@@ -21,12 +21,12 @@ PASS  RADIUS server answered in 23ms
 PASS  Shared secret is correct (reply signature verified)
 PASS  Server signs its replies with Message-Authenticator (BlastRADIUS-hardened)
 PASS  PEAP-MSCHAPv2 authentication succeeded for alice
-PASS  Server certificate valid for 214 more days, chain looks complete (TLS 1.2)
+PASS  Server certificate valid for 214 more days, name matches "radius.corp.com", chain looks complete (TLS 1.2)
 
 Verdict: 5 passed, 0 failed, 0 warnings
 ```
 
-Like `eapol_test` or `radtest`, but the output is readable — one command, no `wpa_supplicant` config file. Add `--json` for scripting, `--nas-port-type ethernet|wireless|virtual` to match how your real NAS presents itself, and `--server-name` to set the expected certificate name.
+Like `eapol_test` or `radtest`, but the output is readable — one command, no `wpa_supplicant` config file ([honest comparison](docs/COMPARISON.md)). Add `--json` for scripting, `--nas-port-type ethernet|wireless|virtual` to match how your real NAS presents itself, and `--server-name` to validate the server certificate's name the way your clients will. Common questions: [FAQ](docs/FAQ.md).
 
 ## Step 0 — register the probe on your server (one time)
 
@@ -66,7 +66,7 @@ Skipped this step? The probe notices: on a first-run timeout it prints this exac
 | **EAP-TTLS (PAP)** | A real login inside the TTLS tunnel using inner PAP. Because the password is checked in cleartext (safe inside the tunnel), TTLS-PAP works against *any* backend — including hashed stores that MSCHAPv2 can't use. If PEAP-MSCHAPv2 fails but this passes, the directory can't produce an NT hash. |
 | **EAP-TLS** | Certificate-based login (no password): presents a client certificate and reports whether the server accepts it — with a plain-English reason on failure (untrusted CA, expired cert, policy reject). See [EAP-TLS: preparing a client certificate](#eap-tls-preparing-a-client-certificate). |
 | **Authorization / VLAN** | On any successful login, decodes and prints the authorization the Access-Accept returned (VLAN, Filter-Id, Session-Timeout, vendor attributes) — and lets you **assert** on it with `--expect-vlan` / `--expect-attr` so "auth works, wrong VLAN" fails loudly. See [Verifying policy](#verifying-policy-not-just-connectivity). |
-| **Server certificate** | Establishes the PEAP/TLS tunnel over RADIUS, captures the server's certificate, and flags **expiry**, an incomplete intermediate chain, and the negotiated TLS version. The "Wi-Fi died overnight" outage, caught early. |
+| **Server certificate** | Establishes the PEAP/TLS tunnel over RADIUS, captures the server's certificate, and flags **expiry**, an incomplete intermediate chain, a **name mismatch** against `--server-name` (FAIL — clients validating that name would reject the handshake), and the negotiated TLS version. Without `--server-name`, name validation is **skipped and reported as a WARN** — the probe never claims "valid" for a name it didn't check. The "Wi-Fi died overnight" outage, caught early. |
 | **Path MTU / fragmentation** (`--mtu`) | Finds the largest RADIUS packet that survives the round trip. Pinpoints the invisible failure where a firewall or VPN drops large / IP-fragmented UDP, so the multi-kilobyte EAP-TLS certificate flight never arrives and 802.1X silently stalls — while every server-side log looks clean. |
 | **RadSec** (`radsec test`) | Checks a RADIUS/TLS endpoint on TCP/2083: reachability, TLS handshake, server certificate, and a RADIUS exchange over the tunnel. For modern deployments and UDP→RadSec migration readiness. |
 
@@ -209,7 +209,7 @@ $ authhound-probe radsec test --server radius.corp.com \
 | `--count N` | Run the checks `N` times (2–50) and report aggregate statistics — see [Chasing intermittent failures](#chasing-intermittent-failures). |
 | `--interval DURATION` | Pause between `--count` iterations (default `2s`; a hard-coded safety floor applies). |
 | `--nas-port-type wireless\|ethernet\|virtual` | How the probe presents itself, so server policies match (default `wireless`). |
-| `--server-name NAME` | Expected server-certificate name (TLS SNI). |
+| `--server-name NAME` | Name the server certificate must be valid for (also sent as TLS SNI). Mismatch = **FAIL**; omitted = name validation skipped, reported as a **WARN** — see [Certificate name validation](#certificate-name-validation---server-name). |
 | `--nas-id NAME` | NAS-Identifier to send (default `authhound-probe`). |
 | `--timeout DURATION` | Per-request timeout (default `5s`). |
 | `--bind IP[:port]` | Source IP to send from, for pinning the outgoing interface on a multi-homed host — see [Binding a source interface](#binding-a-source-interface---bind). |
@@ -396,6 +396,39 @@ the probe prints on a timeout automatically reflects the bound IP, so you can
 paste it as-is. (If NAT sits between this host and the server, the server still
 sees the post-NAT address — register that instead.)
 
+### Certificate name validation (`--server-name`)
+
+Your clients don't just check that the RADIUS server's certificate is unexpired
+— a correctly configured 802.1X profile also validates the certificate's
+**name**. A server presenting a healthy certificate with the *wrong* name still
+breaks every client that validates it. So the probe treats the name as part of
+the certificate verdict:
+
+- **`--server-name radius.corp.com` and the certificate matches** (SAN rules,
+  wildcards included — the same matching real clients do): PASS, and the
+  summary says the name matched.
+- **`--server-name` given but the certificate doesn't match**: **FAIL**, with
+  the names the certificate is *actually* valid for, so you can tell "wrong
+  cert selected on the server" from "my expected name is stale". A certificate
+  with no SAN at all fails too — modern clients don't fall back to the CN.
+- **`--server-name` omitted**: the probe cannot know what name your clients
+  expect, so name validation is **skipped — and reported as a WARN**, never
+  folded into a silent "valid". Expiry and chain are still checked; the WARN
+  tells you exactly what to add. In `--json`, `fields.name_validation` is
+  `"match"`, `"mismatch"`, or `"skipped"` on the `server-cert` / `radsec-cert`
+  results.
+
+Note the division of labour: in the authentication checks (PEAP/TTLS/EAP-TLS),
+`--server-name` is only sent as TLS SNI — the probe deliberately completes
+those handshakes even against a broken certificate, because its job is to
+diagnose rather than refuse. The name *verdict* lives in the `server-cert`
+(and `radsec-cert`) check. The full TLS posture, including why verification is
+capture-and-report by design, is documented in
+[SECURITY.md](SECURITY.md#tls-and-certificate-posture--an-honest-note).
+
+Under `--strict`, the skipped-name WARN exits `1` — deliberate: a scheduled
+monitor should be told which name to pin, not silently skip the check forever.
+
 ### Where credentials come from
 
 This tool is meant to run on shared jump boxes, so it never *requires* a secret or
@@ -480,17 +513,10 @@ Expand-Archive -Path authhound-probe.zip -DestinationPath authhound-probe -Force
 any directory, move the `.exe` somewhere on your `PATH` — e.g.
 `C:\Windows\System32` for all users, or a folder you add to your user `Path`.)
 
-Or via a package manager — see [`packaging/`](packaging/) for the manifests and
-maintainer notes:
-
-```powershell
-# Scoop (from the AuthHound bucket)
-scoop bucket add authhound https://github.com/authhound/scoop-bucket
-scoop install authhound-probe
-
-# winget
-winget install authhound.probe
-```
+Scoop and winget packages are **in progress** — the manifests are maintained in
+[`packaging/`](packaging/), but the Scoop bucket and the winget submission
+haven't been published yet. Until they land, use the PowerShell download above.
+(This note gets replaced with the install one-liners once they're live.)
 
 **Go:**
 
@@ -578,7 +604,7 @@ The probe is a single `.exe` with no runtime, so it drops straight into Task Sch
 # the command line (it would be visible in the task definition).
 $action = New-ScheduledTaskAction `
   -Execute 'C:\Tools\authhound-probe.exe' `
-  -Argument 'radius test --server nps.corp.local --peap svc-radius-probe --json --strict' `
+  -Argument 'radius test --server nps.corp.local --server-name nps.corp.local --peap svc-radius-probe --json --strict' `
   -WorkingDirectory 'C:\Tools'
 $trigger  = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15)
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
@@ -589,7 +615,7 @@ Or the classic one-liner with `schtasks`, redirecting output to a rolling log:
 
 ```powershell
 schtasks /Create /TN "AuthHound RADIUS probe" /SC MINUTE /MO 15 /RU SYSTEM /RL HIGHEST /TR ^
-  "cmd /c C:\Tools\authhound-probe.exe radius test --server nps.corp.local --peap svc-radius-probe --json --strict >> C:\Tools\probe.log 2>&1"
+  "cmd /c C:\Tools\authhound-probe.exe radius test --server nps.corp.local --server-name nps.corp.local --peap svc-radius-probe --json --strict >> C:\Tools\probe.log 2>&1"
 ```
 
 Supply credentials via the environment for the task's account (`AUTHHOUND_SECRET`, `AUTHHOUND_PASSWORD`) or `--secret-file`/`--password-file` pointing at a file only that account can read — see [Where credentials come from](#where-credentials-come-from). Because the probe exits `1` on failure (or on a warning under `--strict`), Task Scheduler's **Last Run Result** reflects health directly: `0x0` healthy, `0x1` something needs attention. Point your existing task-result monitoring at that, or tail `probe.log`.
@@ -605,7 +631,10 @@ Output is colourised only when it's going to a real terminal that can render it,
 
 ## Safety
 
-Built to be safe to run against production, and to pass an enterprise security review:
+Built to be safe to run against production, and to pass an enterprise security
+review. The one-page threat model — what the probe sends, what it stores
+(nothing), what it never does, and how to report a vulnerability — is
+[SECURITY.md](SECURITY.md); the short version:
 
 - **Read-only.** Sends Access-Requests and reads the replies — it never changes anything on the server, and never captures packets.
 - **Credentials stay local, and off the command line.** The shared secret and any password are used only to build the RADIUS packets. They are never written to output, `--json`, logs, or error messages, and nothing is ever sent anywhere (there is no telemetry). So they don't leak into shell history or `ps` on a shared box, they're read from a file (`--secret-file` / `--password-file`, refused if world-readable), an environment variable, standard input, or a no-echo prompt — see [Where credentials come from](#where-credentials-come-from). The plain `--secret`/`user:pass` forms still work but warn on a terminal.
@@ -645,7 +674,10 @@ Interop reports are especially valuable: run the probe against your RADIUS — a
 
 ## See also
 
-Already have a log to read? Paste FreeRADIUS debug output or a Windows NPS event into the free [RADIUS log analyzer](https://authhound.com/analyzer) for a plain-English diagnosis.
+- **[FAQ](docs/FAQ.md)** — timeouts, NPS, credentials, scripting.
+- **[authhound-probe vs eapol_test vs radtest](docs/COMPARISON.md)** — a factual comparison, including when the classics are the better tool.
+- **[SECURITY.md](SECURITY.md)** — the one-page threat model and vulnerability reporting.
+- Already have a log to read? Paste FreeRADIUS debug output or a Windows NPS event into the free [RADIUS log analyzer](https://authhound.com/analyzer) for a plain-English diagnosis.
 
 ## License
 
