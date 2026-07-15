@@ -36,7 +36,7 @@ func (c MTUProbe) Run(ctx context.Context, t Target) Result {
 	attrs := commonAttrs(t)
 
 	// Baseline: a small packet must round-trip, or there's nothing to measure.
-	ok, _, err := radius.MTUReachable(t.Address, t.Secret, mtuMin, attrs, t.Timeout)
+	ok, _, err := radius.MTUReachable(t.Address, t.Secret, mtuMin, attrs, t.Timeout, t.LocalAddr)
 	if err != nil {
 		return Result{Check: "path-mtu", Status: StatusSkip, Summary: "Could not reach the server for the MTU probe: " + err.Error()}
 	}
@@ -51,7 +51,7 @@ func (c MTUProbe) Run(ctx context.Context, t Target) Result {
 	lo, hi, maxOK := mtuMin, mtuMax, mtuMin
 	for hi-lo > mtuStep {
 		mid := (lo + hi) / 2
-		got, _, err := radius.MTUReachable(t.Address, t.Secret, mid, attrs, t.Timeout)
+		got, _, err := radius.MTUReachable(t.Address, t.Secret, mid, attrs, t.Timeout, t.LocalAddr)
 		if err != nil {
 			break
 		}

@@ -13,8 +13,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -173,7 +175,7 @@ func cmdRadsecTest(args []string) int {
 
 func cmdRadiusTest(args []string) int {
 	fs := flag.NewFlagSet("radius test", flag.ExitOnError)
-	server := fs.String("server", "", "RADIUS server host or host:port (default port 1812)")
+	server := fs.String("server", "", "RADIUS server host or host:port (default port 1812); comma-separate several to compare them (e.g. primary,secondary)")
 	secret := fs.String("secret", "", "shared secret (leaks into shell history/ps — prefer AUTHHOUND_SECRET, --secret-file, or the prompt)")
 	secretFile := fs.String("secret-file", "", "read the shared secret from this file (must not be world-readable on unix)")
 	secretStdin := fs.Bool("secret-stdin", false, "read the shared secret from standard input (one line)")
@@ -193,6 +195,7 @@ func cmdRadiusTest(args []string) int {
 	count := fs.Int("count", 1, "run the checks N times (2..50) and report aggregate statistics — for chasing intermittent failures")
 	interval := fs.Duration("interval", 2*time.Second, "pause between --count iterations (a hard-coded safety floor applies)")
 	timeout := fs.Duration("timeout", 5*time.Second, "per-request timeout")
+	bind := fs.String("bind", "", "source IP[:port] to send from, for pinning the outgoing interface on a multi-homed host")
 	jsonOut := fs.Bool("json", false, "emit results as JSON instead of text")
 	noColor := fs.Bool("no-color", false, "disable ANSI colour")
 	strict := fs.Bool("strict", false, "exit non-zero on warnings too (for scheduled monitoring)")
@@ -211,9 +214,20 @@ func cmdRadiusTest(args []string) int {
 	}
 	provided := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { provided[f.Name] = true })
-	addr := *server
-	if !strings.Contains(addr, ":") {
-		addr += ":1812"
+
+	servers, err := parseServers(*server)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+
+	// --bind pins the outgoing interface on a multi-homed host. The resolved
+	// source address flows into every socket the run opens, so the detected
+	// source IP (and thus the registration hint) reflects the bind.
+	localAddr, err := resolveBindAddr(*bind)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
 	}
 
 	portType, ok := nasPortTypes[*nasPortType]
@@ -233,6 +247,13 @@ func cmdRadiusTest(args []string) int {
 		fmt.Fprintln(os.Stderr, "error: --interval only makes sense with --count")
 		return 2
 	}
+	// --count multiplies requests against ONE server; comparing several servers
+	// is a different job. Keeping them separate keeps the output legible and the
+	// per-server load obviously bounded. Test one server at a time with --count.
+	if len(servers) > 1 && *count != 1 {
+		fmt.Fprintln(os.Stderr, "error: --count tests a single server; drop it to compare multiple --server entries, or test one server at a time")
+		return 2
+	}
 
 	prompter := credential.Default()
 	secretValue, err := prompter.Resolve(credential.Spec{
@@ -250,12 +271,14 @@ func cmdRadiusTest(args []string) int {
 		return 2
 	}
 
+	// Address is set per server below; everything else is shared across a
+	// multi-server comparison.
 	target := check.Target{
-		Address:       addr,
 		Secret:        secretValue,
 		Timeout:       *timeout,
 		NASIdentifier: *nasID,
 		NASPortType:   portType,
+		LocalAddr:     localAddr,
 	}
 
 	papUser, papPass, err := resolveCreds(prompter, *pap, "--pap", *passwordFile)
@@ -291,28 +314,36 @@ func cmdRadiusTest(args []string) int {
 	}
 	target.Expect = expect
 
+	// Status-Server runs first: an RFC 5997 liveness ping that doesn't consume an
+	// auth attempt. The rest follow in dependency order (reachability/secret before
+	// the auth methods that rely on them).
+	checks := []check.Check{
+		check.StatusServer{},
+		check.Reachability{},
+		check.SharedSecret{},
+		check.BlastRADIUS{},
+		check.PAP{User: papUser, Pass: papPass},
+		check.PEAPMSCHAPv2{User: peapUser, Pass: peapPass, ServerName: *serverName},
+		check.EAPTTLS{User: ttlsUser, Pass: ttlsPass, ServerName: *serverName},
+		check.EAPTLS{CertFile: *clientCert, KeyFile: *clientKey, ServerName: *serverName},
+		check.ServerCert{ServerName: *serverName},
+		check.MTUProbe{Enabled: *mtu},
+	}
+
+	if len(servers) > 1 {
+		return runMultiServer(target, checks, servers, *jsonOut, *noColor, *strict)
+	}
+
+	target.Address = servers[0]
+	plan := check.Plan{Target: target, Checks: checks}
+
 	// Sink: JSON for scripting, text for humans.
 	var sink resultSink
 	if *jsonOut {
 		sink = report.NewJSONSink(os.Stdout)
 	} else {
-		fmt.Printf("Testing RADIUS server %s (as NAS %q)\n\n", addr, *nasID)
+		fmt.Printf("Testing RADIUS server %s (as NAS %q)\n\n", servers[0], *nasID)
 		sink = report.NewTextSink(os.Stdout, report.UseColor(os.Stdout, *noColor))
-	}
-
-	plan := check.Plan{
-		Target: target,
-		Checks: []check.Check{
-			check.Reachability{},
-			check.SharedSecret{},
-			check.BlastRADIUS{},
-			check.PAP{User: papUser, Pass: papPass},
-			check.PEAPMSCHAPv2{User: peapUser, Pass: peapPass, ServerName: *serverName},
-			check.EAPTTLS{User: ttlsUser, Pass: ttlsPass, ServerName: *serverName},
-			check.EAPTLS{CertFile: *clientCert, KeyFile: *clientKey, ServerName: *serverName},
-			check.ServerCert{ServerName: *serverName},
-			check.MTUProbe{Enabled: *mtu},
-		},
 	}
 
 	if *count != 1 {
@@ -324,6 +355,119 @@ func cmdRadiusTest(args []string) int {
 	_ = sink.Close()
 
 	return exitCode(sink, *strict)
+}
+
+// parseServers splits the --server value on commas into normalized host:port
+// entries (default port 1812), dropping empties (a trailing comma) and
+// duplicates while preserving order. At least one server must remain.
+func parseServers(raw string) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		s := strings.TrimSpace(part)
+		if s == "" {
+			continue
+		}
+		if !strings.Contains(s, ":") {
+			s += ":1812"
+		}
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("--server is required")
+	}
+	return out, nil
+}
+
+// resolveBindAddr turns a --bind IP[:port] value into the source address sockets
+// bind to. Empty means "let the OS choose". The source must be an IP literal (a
+// specific local address on this host), never a hostname — binding is about
+// which interface leaves, not name resolution. Port defaults to 0 (ephemeral).
+func resolveBindAddr(s string) (*net.UDPAddr, error) {
+	if s == "" {
+		return nil, nil
+	}
+	host, port, err := net.SplitHostPort(s)
+	if err != nil {
+		// Most commonly there's no port (a bare source IP); retry with port 0.
+		host, port = s, "0"
+	}
+	if net.ParseIP(host) == nil {
+		return nil, fmt.Errorf("--bind %q: source must be a local IP address, not a hostname", s)
+	}
+	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, port))
+	if err != nil {
+		return nil, fmt.Errorf("--bind %q is not a valid IP[:port]: %w", s, err)
+	}
+	return addr, nil
+}
+
+// runMultiServer runs the full check plan against each server in turn, prints
+// each server's block, then a comparison verdict — split-brain between RADIUS
+// servers being a classic hidden cause of "intermittent" auth tickets. Each
+// server is still bounded by the runner's rate ceiling; comparing servers never
+// raises the load on any one of them. The exit code follows the combined result
+// (a FAIL on any server fails the run; under --strict, a WARN does too).
+func runMultiServer(base check.Target, checks []check.Check, servers []string, jsonOut, noColor, strict bool) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	var jsink *report.JSONSink
+	if jsonOut {
+		jsink = report.NewJSONSink(os.Stdout)
+	}
+
+	var runs []check.ServerRun
+	for i, srv := range servers {
+		if ctx.Err() != nil {
+			fmt.Fprintf(os.Stderr, "interrupted — tested %d of %d servers\n", i, len(servers))
+			break
+		}
+		target := base
+		target.Address = srv
+		plan := check.Plan{Target: target, Checks: checks}
+
+		var results []check.Result
+		if jsonOut {
+			runner := check.Runner{Sink: jsink} // accumulates combined results + summary
+			results = runner.Run(ctx, plan)
+		} else {
+			fmt.Printf("=== Server %d/%d: %s ===\n\n", i+1, len(servers), srv)
+			ts := report.NewTextSink(os.Stdout, report.UseColor(os.Stdout, noColor))
+			runner := check.Runner{Sink: ts}
+			results = runner.Run(ctx, plan)
+			_ = ts.Close()
+			fmt.Println()
+		}
+		runs = append(runs, check.ServerRun{Server: srv, Results: results})
+	}
+
+	cmp := check.CompareServers(runs)
+	if jsonOut {
+		jsink.SetServers(runs, cmp)
+		_ = jsink.Close()
+	} else {
+		fmt.Print(report.ComparisonBlock(cmp))
+	}
+	return multiExitCode(runs, strict)
+}
+
+// multiExitCode maps the combined multi-server results to the process exit code,
+// independent of the sink: 1 if any server had a FAIL, or — under --strict — a
+// WARN; otherwise 0.
+func multiExitCode(runs []check.ServerRun, strict bool) int {
+	for _, r := range runs {
+		for _, res := range r.Results {
+			if res.Status == check.StatusFail || (strict && res.Status == check.StatusWarn) {
+				return 1
+			}
+		}
+	}
+	return 0
 }
 
 // runRepeat drives --count: N sequential iterations, then the aggregate

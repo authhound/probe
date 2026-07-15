@@ -57,6 +57,7 @@ Skipped this step? The probe notices: on a first-run timeout it prints this exac
 
 | Check | What it proves |
 |---|---|
+| **Status-Server** | An [RFC 5997](https://www.rfc-editor.org/rfc/rfc5997) liveness ping that runs first and **consumes no authentication attempt** — nothing shows up in the server's auth log. PASS if the server answers; a neutral INFO (never a failure) if it doesn't, since many servers leave it off. See [Liveness & multi-server](#liveness--comparing-servers). |
 | **Reachability** | The server answers on UDP/1812 — and how fast. A timeout means unreachable, not listening, **or the probe isn't whitelisted / the secret is wrong** (servers silently drop unverifiable requests). |
 | **Shared secret** | Cryptographically verifies the server's reply signature. A pass *proves* the secret matches — no more guessing whether "everyone's getting rejected" is a secret problem or something else. |
 | **BlastRADIUS posture** | Observes whether the server signs its replies with a **Message-Authenticator** — the mitigation for the RADIUS/UDP reply-forgery flaw [CVE-2024-3596](https://blastradius.fail) ("BlastRADIUS"). PASS if it does; WARN, with config pointers, if it accepts the probe's (signed) request but replies unsigned. Observation only — see below. |
@@ -193,7 +194,7 @@ $ authhound-probe radsec test --server radius.corp.com \
 
 | Flag | Purpose |
 |---|---|
-| `--server HOST[:port]` | RADIUS server (default port 1812). **Required.** |
+| `--server HOST[:port]` | RADIUS server (default port 1812). **Required.** Comma-separate several to compare them — see [Comparing servers](#liveness--comparing-servers). |
 | `--secret SECRET` | Shared secret (**required**, but prefer `AUTHHOUND_SECRET` / `--secret-file` / `--secret-stdin` — see [below](#where-credentials-come-from)). |
 | `--secret-file FILE` | Read the shared secret from a file (must not be world-readable on unix). |
 | `--secret-stdin` | Read the shared secret from standard input (one line). |
@@ -211,6 +212,7 @@ $ authhound-probe radsec test --server radius.corp.com \
 | `--server-name NAME` | Expected server-certificate name (TLS SNI). |
 | `--nas-id NAME` | NAS-Identifier to send (default `authhound-probe`). |
 | `--timeout DURATION` | Per-request timeout (default `5s`). |
+| `--bind IP[:port]` | Source IP to send from, for pinning the outgoing interface on a multi-homed host — see [Binding a source interface](#binding-a-source-interface---bind). |
 | `--json` | Machine-readable output for scripts / RMM ([schema](docs/json-schema.md)). |
 | `--strict` | Exit non-zero on **warnings** too (e.g. a soon-to-expire cert), for scheduled monitoring. |
 | `--no-color` | Force plain output. Colour is auto-detected otherwise — see [Colour](#colour-and-windows-terminals). |
@@ -327,6 +329,72 @@ repeats forever, or stores anything between runs.
 With `--json`, each iteration's results plus per-check aggregate statistics
 (success counts, timeouts, latency min/median/p95/max) appear in an additive
 `repeat` block — see the [schema](docs/json-schema.md).
+
+### Liveness & comparing servers
+
+**Status-Server** runs first: an [RFC 5997](https://www.rfc-editor.org/rfc/rfc5997)
+liveness ping that a server answers *without* logging an authentication attempt.
+It's the polite way to ask "are you alive?" — nothing shows up in the auth log.
+Many servers leave it off, so silence here is a neutral **INFO**, never a
+failure; the reachability check below is the authoritative one. To turn it on in
+FreeRADIUS, set `status_server = yes` in `radiusd.conf`.
+
+**Comparing servers.** Almost every site runs a primary and a secondary RADIUS
+server, and clients reach them through DNS round-robin or a shared VIP. When one
+of the pair is quietly broken — down, unregistered, or drifted out of config —
+roughly half of authentications fail *depending on which server the client
+happened to hit*. That is the single most common hidden cause of "it works
+sometimes" tickets, and a single-server test can't see it. Comma-separate the
+servers and the probe tests each, then prints a comparison:
+
+```console
+$ export AUTHHOUND_SECRET='shared-secret'
+$ authhound-probe radius test --server radius1.corp.com,radius2.corp.com --pap alice
+
+=== Server 1/2: radius1.corp.com:1812 ===
+... per-check results ...
+Verdict: 4 passed, 0 failed, 0 warnings, 5 skipped
+
+=== Server 2/2: radius2.corp.com:1812 ===
+... per-check results ...
+Verdict: 0 passed, 1 failed, 0 warnings, 8 skipped
+
+Comparison across servers:
+  radius1.corp.com:1812 is responding, but radius2.corp.com:1812 is NOT. If
+  clients reach these servers via DNS round-robin or a shared VIP, roughly 50%
+  of authentications would fail intermittently depending on which server they
+  land on — the classic 'it works sometimes' ticket. Take the unresponsive
+  server(s) out of rotation or bring them back.
+```
+
+The verdict also covers the subtler case where both servers answer but
+**disagree** — one accepts a login the other rejects, or assigns a different
+VLAN — which points at config or replication drift between them.
+
+The exit code follows the combined result: a FAIL on *any* server fails the run
+(and under `--strict`, a WARN does too). Each server is still bounded by the same
+hard-coded rate ceiling; comparing servers never raises the load on any one of
+them. `--count` and multiple `--server` are mutually exclusive — chase
+intermittency on one server, compare across servers separately. With `--json`,
+per-server blocks and the verdict appear in additive `servers` / `comparison`
+fields — see the [schema](docs/json-schema.md#servers--comparison-multiple---server).
+
+### Binding a source interface (`--bind`)
+
+Jump boxes and monitoring servers are usually multi-homed. `--bind IP[:port]`
+pins the source address the probe sends from, so RADIUS leaves the interface you
+intend (and reaches a server whose firewall only permits that address):
+
+```console
+$ authhound-probe radius test --server radius.corp.com --bind 10.20.0.5
+```
+
+The source must be a local IP literal on this host (not a hostname). This is also
+the address the server sees, so it's the one to register as a RADIUS client — and
+the [Step 0 registration snippet](#step-0--register-the-probe-on-your-server-one-time)
+the probe prints on a timeout automatically reflects the bound IP, so you can
+paste it as-is. (If NAT sits between this host and the server, the server still
+sees the post-NAT address — register that instead.)
 
 ### Where credentials come from
 

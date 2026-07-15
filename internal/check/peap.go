@@ -33,11 +33,12 @@ func (c PEAPMSCHAPv2) Run(ctx context.Context, t Target) Result {
 	}
 
 	sess := &radius.EAPSession{
-		Addr:     t.Address,
-		Secret:   t.Secret,
-		Timeout:  t.Timeout,
-		Identity: c.User,
-		Attrs:    commonAttrs(t),
+		Addr:      t.Address,
+		Secret:    t.Secret,
+		Timeout:   t.Timeout,
+		Identity:  c.User,
+		Attrs:     commonAttrs(t),
+		LocalAddr: t.LocalAddr,
 	}
 
 	res, err := sess.AuthPEAPMSCHAPv2(ctx, c.User, c.Pass, c.ServerName)

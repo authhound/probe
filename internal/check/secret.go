@@ -32,7 +32,7 @@ func (SharedSecret) Run(ctx context.Context, t Target) Result {
 	addCommon(p, t)
 
 	reqAuth := p.Authenticator
-	_, raw, _, err := radius.Exchange(t.Address, t.Secret, p, t.Timeout)
+	_, raw, _, err := radius.Exchange(t.Address, t.Secret, p, t.Timeout, t.LocalAddr)
 	if err != nil {
 		if errors.Is(err, radius.ErrTimeout) {
 			return markTimeout(Result{

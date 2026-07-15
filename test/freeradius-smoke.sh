@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 
 SECRET="testing123"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"; docker rm -f ah-freeradius ah-freeradius-nc ah-freeradius-flaky ah-netem ah-unhardened >/dev/null 2>&1 || true' EXIT
+trap 'rm -rf "$work"; docker rm -f ah-freeradius ah-freeradius-nc ah-freeradius-flaky ah-netem ah-unhardened ah-secondary >/dev/null 2>&1 || true' EXIT
 
 # One test user for the PAP check, plus a machine identity for the NPS-style
 # machine-auth check. This file replaces the default authorize file; a single
@@ -131,6 +131,21 @@ echo "== correct secret + PAP + PEAP-MSCHAPv2 + EAP-TTLS + EAP-TLS + MTU (expect
 "$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" \
   --pap 'alice:pw' --peap 'alice:pw' --ttls 'alice:pw' \
   --client-cert "$work/cert.pem" --client-key "$work/key.pem" --mtu --no-color || true
+
+echo
+echo "== Status-Server (RFC 5997): a server that supports it answers (expect PASS) =="
+# FreeRADIUS answers Status-Server by default: a liveness ping that consumes no
+# auth attempt. The probe runs it first and reports PASS + supported=true.
+set +e
+ss_out="$("$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" --no-color)"
+ss_json="$("$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" --json)"
+set -e
+echo "$ss_out" | grep -i "Status-Server"
+echo "$ss_out" | grep -qi "answered Status-Server" || { echo "FAIL: Status-Server should PASS on a server that supports it"; exit 1; }
+echo "$ss_json" | grep -q '"check": "status-server"' || { echo "FAIL: --json missing the status-server result"; exit 1; }
+echo "$ss_json" | grep -q '"supported": "true"' || { echo "FAIL: --json should mark status-server supported=true"; exit 1; }
+if echo "$ss_out$ss_json" | grep -q "$SECRET"; then echo "FAIL: secret leaked into Status-Server output"; exit 1; fi
+echo "OK: Status-Server answered -> PASS, supported=true (no auth attempt consumed)"
 
 echo
 echo "== BlastRADIUS posture: hardened FreeRADIUS signs replies (expect PASS) =="
@@ -284,6 +299,55 @@ echo "$sjson" | grep -q '"fail": 0' || { echo "FAIL: --json summary.fail should 
 echo "OK: schema_version present; per-status counts addressable (warn=1, fail=0)"
 
 echo
+echo "== multi-server comparison: two healthy servers, then one down =="
+# A second FreeRADIUS on a bridge port (the host-net primary already owns 1812),
+# so the probe can compare two servers. Split-brain between RADIUS servers is the
+# classic hidden cause of "intermittent" auth tickets. Permissive client entry
+# (any source IP) because requests arrive via the Docker bridge gateway.
+# Throwaway lab secret, never production.
+cat > "$work/clients-secondary" <<'EOF'
+client lab {
+	ipaddr = 0.0.0.0/0
+	secret = testing123
+}
+EOF
+docker run -d --rm --name ah-secondary -p 127.0.0.1:11814:1812/udp \
+  -v "$work/authorize:/etc/raddb/mods-config/files/authorize:ro" \
+  -v "$work/clients-secondary:/etc/raddb/clients.conf:ro" \
+  freeradius/freeradius-server:latest -fxx -l stdout >/dev/null
+for i in $(seq 1 30); do
+  if docker logs ah-secondary 2>&1 | grep -q "Ready to process requests"; then break; fi
+  sleep 0.5
+done
+
+# Both healthy and matching -> "no split-brain", exit 0, per-server JSON blocks.
+set +e
+ms_ok="$("$work/authhound-probe" radius test --server 127.0.0.1,127.0.0.1:11814 --secret "$SECRET" --no-color)"; ms_ok_rc=$?
+ms_json="$("$work/authhound-probe" radius test --server 127.0.0.1,127.0.0.1:11814 --secret "$SECRET" --json)"
+set -e
+echo "$ms_ok" | grep -A3 "Comparison across servers"
+echo "$ms_ok" | grep -q "=== Server 1/2: 127.0.0.1:1812 ===" || { echo "FAIL: missing per-server banner"; exit 1; }
+[ "$ms_ok_rc" -eq 0 ] || { echo "FAIL: two healthy servers should exit 0, got $ms_ok_rc"; exit 1; }
+# Assert the verdict against the JSON (its verdict string is single-line; the
+# text one is word-wrapped for the terminal and would split the phrase).
+echo "$ms_json" | grep -q '"servers"' || { echo "FAIL: --json missing the servers[] block"; exit 1; }
+echo "$ms_json" | grep -q '"comparison"' || { echo "FAIL: --json missing the comparison block"; exit 1; }
+echo "$ms_json" | grep -q "no split-brain" || { echo "FAIL: two healthy servers should report no split-brain"; exit 1; }
+if echo "$ms_ok$ms_json" | grep -q "$SECRET"; then echo "FAIL: secret leaked into multi-server output"; exit 1; fi
+echo "OK: two healthy servers -> no split-brain; servers[]/comparison in JSON; exit 0"
+
+# Primary healthy, secondary (unused port) down -> the round-robin verdict, exit 1.
+set +e
+ms_down="$("$work/authhound-probe" radius test --server 127.0.0.1,127.0.0.1:11899 --secret "$SECRET" --timeout 2s --no-color)"; ms_down_rc=$?
+set -e
+echo "$ms_down" | grep -A3 "Comparison across servers"
+echo "$ms_down" | grep -qi "round-robin" || { echo "FAIL: one-down comparison should name the round-robin risk"; exit 1; }
+echo "$ms_down" | grep -q "50%" || { echo "FAIL: 1-of-2 down should read ~50%"; exit 1; }
+[ "$ms_down_rc" -eq 1 ] || { echo "FAIL: a dead server should exit 1, got $ms_down_rc"; exit 1; }
+echo "OK: primary healthy, secondary down -> ~50% round-robin verdict; exit 1"
+docker rm -f ah-secondary >/dev/null 2>&1 || true
+
+echo
 echo "== unwhitelisted probe (fresh server, no client entry -> expect registration hint) =="
 # A fresh FreeRADIUS whose clients.conf contains only a dummy client, so requests
 # from 127.0.0.1 come from an UNKNOWN client and are silently dropped — the
@@ -313,8 +377,11 @@ if echo "$out" | grep -q "$SECRET"; then echo "FAIL: secret leaked into text out
 json="$(AUTHHOUND_SECRET="$SECRET" "$work/authhound-probe" radius test --server 127.0.0.1 --timeout 2s --json || true)"
 echo "$json" | grep -q '"hint"' || { echo "FAIL: --json missing hint field"; exit 1; }
 echo "$json" | grep -q '"source_ip": "127.0.0.1"' || { echo "FAIL: --json missing source_ip field"; exit 1; }
+# Status-Server degrades gracefully: an unanswered probe is INFO (supported=false),
+# never a FAIL — the reachability FAIL above carries the actionable guidance.
+echo "$json" | grep -q '"supported": "false"' || { echo "FAIL: unanswered Status-Server should degrade to supported=false"; exit 1; }
 if echo "$json" | grep -q "$SECRET"; then echo "FAIL: secret leaked into JSON output"; exit 1; fi
-echo "OK: registration hint present with detected IP; secret not leaked"
+echo "OK: registration hint present with detected IP; Status-Server degraded to INFO; secret not leaked"
 
 echo
 echo "== flaky server: --count against induced packet loss (tc netem) =="

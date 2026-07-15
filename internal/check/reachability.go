@@ -26,7 +26,7 @@ func (Reachability) Run(ctx context.Context, t Target) Result {
 	p.AddString(radius.AttrUserName, "authhound-probe")
 	addCommon(p, t)
 
-	_, _, rtt, err := radius.Exchange(t.Address, t.Secret, p, t.Timeout)
+	_, _, rtt, err := radius.Exchange(t.Address, t.Secret, p, t.Timeout, t.LocalAddr)
 	fields := map[string]string{"rtt_ms": strconv.FormatInt(rtt.Milliseconds(), 10)}
 
 	if err == nil {

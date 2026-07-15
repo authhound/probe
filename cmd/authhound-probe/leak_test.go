@@ -32,6 +32,7 @@ func TestNoCredentialLeak(t *testing.T) {
 		NASIdentifier: "authhound-probe",
 	}
 	checks := []check.Check{
+		check.StatusServer{},
 		check.Reachability{},
 		check.SharedSecret{},
 		check.PAP{User: "alice", Pass: sentinelPass},

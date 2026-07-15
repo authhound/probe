@@ -45,6 +45,8 @@ is a deliberate, reviewed act rather than an accident.
 | `results` | array of result objects | always | One entry per check, in the order they ran. With `--count`, one **aggregate verdict** per check (see the `repeat` block below). |
 | `summary` | object | always | Per-status tally. **All five keys are always present**, including zeros — address `.summary.warn` without checking it exists first. |
 | `repeat` | object | only with `--count` | Additive: per-iteration results and aggregate statistics for a repeated run. Absent on single runs, whose documents are unchanged. |
+| `servers` | array | only when comparing >1 `--server` | Additive: one block per server (`server`, `results`, `summary`). Absent for a single server, whose document is unchanged. See [Multi-server](#servers--comparison-multiple---server). |
+| `comparison` | object | only when comparing >1 `--server` | Additive: the cross-server verdict (`verdict`, `reachable`, `unreachable`, `divergent`). Paired with `servers`. |
 
 ### `summary` object
 
@@ -62,12 +64,12 @@ Each entry in `results`:
 
 | Field | Type | Presence | Notes |
 |---|---|---|---|
-| `check` | string | always | Stable identifier for the check, e.g. `reachability`, `shared-secret`, `blastradius-posture`, `pap`, `peap-mschapv2`, `eap-ttls`, `eap-tls`, `server-cert`, `mtu`, `radsec-connect`, `radsec-tls`, `radsec-cert`, `radsec-radius`. |
+| `check` | string | always | Stable identifier for the check, e.g. `status-server`, `reachability`, `shared-secret`, `blastradius-posture`, `pap`, `peap-mschapv2`, `eap-ttls`, `eap-tls`, `server-cert`, `mtu`, `radsec-connect`, `radsec-tls`, `radsec-cert`, `radsec-radius`. |
 | `status` | string | always | One of `pass`, `fail`, `warn`, `info`, `skip` (see below). |
 | `summary` | string | always | One plain-English line describing the outcome. |
 | `detail` | string | when present | Extra context. Omitted when empty. |
 | `hint` | string | when present | Multi-line, paste-ready remediation. Newline formatting is significant. Omitted when empty. Never contains secrets. |
-| `fields` | object (string→string) | when present | Structured extras such as `rtt_ms`, `tls_version`, `not_after`, `subject`, `san`, `chain_len`, `source_ip`. `blastradius_posture` (on the `blastradius-posture` check) is `"signed"` or `"unsigned"` — whether the server signed its reply with a Message-Authenticator (see [BlastRADIUS posture](../README.md#blastradius--message-authenticator-posture)). `timeout: "true"` marks a request that got no reply at all (a *lost* request, as opposed to a processed rejection). Aggregate verdicts under `--count` add `success_rate`, `attempts`, `successes`, `timeouts`, and `latency_{min,median,p95,max}_ms`. Keys vary by check; values are always strings. Omitted when there are none. |
+| `fields` | object (string→string) | when present | Structured extras such as `rtt_ms`, `tls_version`, `not_after`, `subject`, `san`, `chain_len`, `source_ip`. On the `status-server` check, `supported` is `"true"` (the server answered the RFC 5997 liveness query) or `"false"` (it didn't — which is fine; that check never fails). `blastradius_posture` (on the `blastradius-posture` check) is `"signed"` or `"unsigned"` — whether the server signed its reply with a Message-Authenticator (see [BlastRADIUS posture](../README.md#blastradius--message-authenticator-posture)). `timeout: "true"` marks a request that got no reply at all (a *lost* request, as opposed to a processed rejection). Aggregate verdicts under `--count` add `success_rate`, `attempts`, `successes`, `timeouts`, and `latency_{min,median,p95,max}_ms`. Keys vary by check; values are always strings. Omitted when there are none. |
 | `duration_ns` | integer | when present | How long the check took, in nanoseconds. Omitted when zero. |
 | `authorization` | object | when present | On an auth check that reached an Access-Accept, the authorization attributes the server returned (VLAN/Filter-Id/…) and the outcome of any `--expect-vlan`/`--expect-attr` assertions. See below. Omitted otherwise. |
 
@@ -130,6 +132,43 @@ the raw material:
 | `iterations` | array | One entry per completed iteration, each with its `results` (same result-object shape as the top level). |
 | `aggregate` | array | Per-check tallies. `successes` = the server answered and processed the request (pass/warn/info); `timeouts` = the subset of `failures` where no reply arrived at all. `latency_ms` (nearest-rank percentiles over answered runs) is omitted when nothing was answered. |
 
+## `servers` + `comparison` (multiple `--server`)
+
+Passing several comma-separated servers (`--server primary,secondary`) runs the
+full plan against each and adds two top-level fields. **Single-server documents
+are unaffected** — both fields are omitted and the output is byte-for-byte
+unchanged.
+
+Top-level `results` and `summary` still describe the **combined** run across all
+servers (so `.summary.fail` still drives the exit code — a FAIL on *any* server
+fails the run). The per-server breakdown lives under `servers`:
+
+```json
+"servers": [
+  { "server": "primary:1812",   "results": [ /* … */ ], "summary": { "pass": 4, "fail": 0, "warn": 0, "info": 1, "skip": 5 } },
+  { "server": "secondary:1812", "results": [ /* … */ ], "summary": { "pass": 0, "fail": 1, "warn": 0, "info": 1, "skip": 8 } }
+],
+"comparison": {
+  "verdict": "primary:1812 is responding, but secondary:1812 is NOT. …",
+  "reachable":   [ "primary:1812" ],
+  "unreachable": [ "secondary:1812" ],
+  "divergent":   [ "pap: primary:1812=pass, secondary:1812=fail — servers disagree" ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `servers[].server` | string | The `host:port` tested. |
+| `servers[].results` | array | That server's result objects (same shape as top-level `results`). |
+| `servers[].summary` | object | That server's per-status tally. |
+| `comparison.verdict` | string | One plain-English headline: all matching, one/some not responding (with the round-robin risk), or responding-but-disagreeing. |
+| `comparison.reachable` | array of strings | Servers whose reachability check passed. |
+| `comparison.unreachable` | array of strings | Servers that did not answer. |
+| `comparison.divergent` | array of strings | Per-check disagreements among the servers that *did* answer (config/replication drift). Omitted when there are none. |
+
+`--count` and multiple `--server` are mutually exclusive (usage error) — chase
+intermittency on one server, compare across servers separately.
+
 ### `status` values
 
 | Value | Meaning | Effect on exit code |
@@ -160,6 +199,10 @@ authhound-probe radius test --server r --json | jq '.summary.fail'
 
 # --count: which checks lost requests, from the aggregate block:
 ... --count 10 --json | jq -r '.repeat.aggregate[] | select(.timeouts > 0) | "\(.check): \(.timeouts) lost"'
+
+# Multiple --server: which servers aren't responding, and the verdict:
+... --server a,b --json | jq -r '.comparison.unreachable[]'
+... --server a,b --json | jq -r '.comparison.verdict'
 ```
 
 ## Exit codes

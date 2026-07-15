@@ -2,6 +2,7 @@ package radius
 
 import (
 	"errors"
+	"net"
 	"time"
 )
 
@@ -43,7 +44,7 @@ func (p *Packet) padToWithProxyState(target int) {
 // whether a reply came back — i.e. whether the network path carries RADIUS
 // packets of that size in both directions. Any reply (even Access-Reject)
 // counts; a timeout means the packet (or its reply) was dropped.
-func MTUReachable(addr, secret string, target int, attrs []Attribute, timeout time.Duration) (ok bool, replied bool, err error) {
+func MTUReachable(addr, secret string, target int, attrs []Attribute, timeout time.Duration, localAddr net.Addr) (ok bool, replied bool, err error) {
 	p, err := NewAccessRequest(1)
 	if err != nil {
 		return false, false, err
@@ -54,7 +55,7 @@ func MTUReachable(addr, secret string, target int, attrs []Attribute, timeout ti
 	}
 	p.padToWithProxyState(target)
 
-	_, _, _, err = Exchange(addr, secret, p, timeout)
+	_, _, _, err = Exchange(addr, secret, p, timeout, localAddr)
 	if err == nil {
 		return true, true, nil
 	}

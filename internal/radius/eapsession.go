@@ -22,11 +22,12 @@ import (
 // certificate can be inspected. Inner authentication (PEAP-MSCHAPv2, EAP-TLS
 // client cert) builds on the same session and is a later milestone.
 type EAPSession struct {
-	Addr     string
-	Secret   string
-	Timeout  time.Duration
-	Identity string
-	Attrs    []Attribute // common NAS attributes added to every request
+	Addr      string
+	Secret    string
+	Timeout   time.Duration
+	Identity  string
+	Attrs     []Attribute // common NAS attributes added to every request
+	LocalAddr net.Addr    // source address to bind (--bind); nil = OS default
 
 	radiusID  byte
 	state     []byte // RADIUS State attribute to echo back
@@ -58,7 +59,7 @@ func (s *EAPSession) send(eap []byte) (*EAPPacket, Code, error) {
 		p.Add(AttrState, s.state)
 	}
 
-	reply, _, _, err := Exchange(s.Addr, s.Secret, p, s.Timeout)
+	reply, _, _, err := Exchange(s.Addr, s.Secret, p, s.Timeout, s.LocalAddr)
 	if err != nil {
 		return nil, 0, err
 	}
