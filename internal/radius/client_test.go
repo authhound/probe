@@ -22,7 +22,7 @@ func TestExchangeTimeoutCarriesLocalIP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, err = Exchange(pc.LocalAddr().String(), "s3cret", p, 200*time.Millisecond)
+	_, _, _, err = Exchange(pc.LocalAddr().String(), "s3cret", p, 200*time.Millisecond, nil)
 	if !errors.Is(err, ErrTimeout) {
 		t.Fatalf("want ErrTimeout match, got %v", err)
 	}

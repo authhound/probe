@@ -23,11 +23,12 @@ func (ServerCert) Name() string { return "server-cert" }
 
 func (c ServerCert) Run(ctx context.Context, t Target) Result {
 	sess := &radius.EAPSession{
-		Addr:     t.Address,
-		Secret:   t.Secret,
-		Timeout:  t.Timeout,
-		Identity: "authhound-probe",
-		Attrs:    commonAttrs(t),
+		Addr:      t.Address,
+		Secret:    t.Secret,
+		Timeout:   t.Timeout,
+		Identity:  "authhound-probe",
+		Attrs:     commonAttrs(t),
+		LocalAddr: t.LocalAddr,
 	}
 
 	captured, err := sess.InspectServerCert(ctx, c.ServerName)

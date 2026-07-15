@@ -22,6 +22,7 @@ const (
 	AccessAccept    Code = 2
 	AccessReject    Code = 3
 	AccessChallenge Code = 11
+	StatusServer    Code = 12 // RFC 5997 liveness query; reply is an Access-Accept
 )
 
 func (c Code) String() string {
@@ -34,6 +35,8 @@ func (c Code) String() string {
 		return "Access-Reject"
 	case AccessChallenge:
 		return "Access-Challenge"
+	case StatusServer:
+		return "Status-Server"
 	default:
 		return fmt.Sprintf("Code(%d)", byte(c))
 	}
@@ -97,6 +100,19 @@ func NewAccessRequest(id byte) (*Packet, error) {
 		return nil, err
 	}
 	return &Packet{Code: AccessRequest, Identifier: id, Authenticator: auth}, nil
+}
+
+// NewStatusServer creates a Status-Server (RFC 5997) liveness query with a fresh
+// authenticator. It carries no User-Name or password — it is a pure "are you
+// alive?" ping that a server answers with an Access-Accept without ever
+// consuming an authentication attempt. Exchange always appends the
+// Message-Authenticator that RFC 5997 requires.
+func NewStatusServer(id byte) (*Packet, error) {
+	auth, err := newAuthenticator()
+	if err != nil {
+		return nil, err
+	}
+	return &Packet{Code: StatusServer, Identifier: id, Authenticator: auth}, nil
 }
 
 func (p *Packet) Add(t AttrType, v []byte) {

@@ -38,7 +38,7 @@ func (c PAP) Run(ctx context.Context, t Target) Result {
 	p.SetUserPassword(c.Pass, t.Secret)
 	addCommon(p, t)
 
-	reply, _, _, err := radius.Exchange(t.Address, t.Secret, p, t.Timeout)
+	reply, _, _, err := radius.Exchange(t.Address, t.Secret, p, t.Timeout, t.LocalAddr)
 	if err != nil {
 		if errors.Is(err, radius.ErrTimeout) {
 			return markTimeout(Result{Check: "pap-auth", Status: StatusSkip, Summary: "No reply — resolve reachability first"})

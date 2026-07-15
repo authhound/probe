@@ -20,10 +20,12 @@ const SchemaVersion = "1"
 // in docs/json-schema.md and pinned by a golden-file test: a top-level
 // schema_version, the per-check results, and a summary tally.
 type JSONSink struct {
-	w       io.Writer
-	results []check.Result
-	counts  map[check.Status]int
-	repeat  *repeatDoc // non-nil only in repeat mode (--count); see SetRepeat
+	w          io.Writer
+	results    []check.Result
+	counts     map[check.Status]int
+	repeat     *repeatDoc        // non-nil only in repeat mode (--count); see SetRepeat
+	servers    []serverDoc       // non-nil only when comparing >1 --server; see SetServers
+	comparison *check.Comparison // the cross-server verdict, paired with servers
 }
 
 func NewJSONSink(w io.Writer) *JSONSink {
@@ -46,16 +48,64 @@ type summaryCounts struct {
 	Skip int `json:"skip"`
 }
 
+// serverDoc is one server's block in a multi-server comparison. Top-level
+// `results`/`summary` stay present (the combined tally across all servers, so
+// `.summary.fail` still drives scripts); `servers[]` groups them per server.
+type serverDoc struct {
+	Server  string         `json:"server"`
+	Results []check.Result `json:"results"`
+	Summary summaryCounts  `json:"summary"`
+}
+
+// SetServers attaches the per-server grouping and cross-server verdict for a
+// multi-server run. It is additive: single-server documents omit both fields and
+// are byte-for-byte unchanged.
+func (s *JSONSink) SetServers(runs []check.ServerRun, cmp check.Comparison) {
+	for _, r := range runs {
+		s.servers = append(s.servers, serverDoc{
+			Server:  r.Server,
+			Results: r.Results,
+			Summary: tally(r.Results),
+		})
+	}
+	s.comparison = &cmp
+}
+
+// tally counts a result set into the fixed summary struct (all statuses present,
+// including zeros).
+func tally(results []check.Result) summaryCounts {
+	var c summaryCounts
+	for _, r := range results {
+		switch r.Status {
+		case check.StatusPass:
+			c.Pass++
+		case check.StatusFail:
+			c.Fail++
+		case check.StatusWarn:
+			c.Warn++
+		case check.StatusInfo:
+			c.Info++
+		case check.StatusSkip:
+			c.Skip++
+		}
+	}
+	return c
+}
+
 func (s *JSONSink) Close() error {
 	doc := struct {
-		SchemaVersion string         `json:"schema_version"`
-		Results       []check.Result `json:"results"`
-		Summary       summaryCounts  `json:"summary"`
-		Repeat        *repeatDoc     `json:"repeat,omitempty"` // additive: only with --count
+		SchemaVersion string            `json:"schema_version"`
+		Results       []check.Result    `json:"results"`
+		Summary       summaryCounts     `json:"summary"`
+		Repeat        *repeatDoc        `json:"repeat,omitempty"`     // additive: only with --count
+		Servers       []serverDoc       `json:"servers,omitempty"`    // additive: only when comparing >1 --server
+		Comparison    *check.Comparison `json:"comparison,omitempty"` // additive: paired with servers
 	}{
 		SchemaVersion: SchemaVersion,
 		Results:       s.results,
 		Repeat:        s.repeat,
+		Servers:       s.servers,
+		Comparison:    s.comparison,
 		Summary: summaryCounts{
 			Pass: s.counts[check.StatusPass],
 			Fail: s.counts[check.StatusFail],

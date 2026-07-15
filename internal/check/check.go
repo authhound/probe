@@ -11,6 +11,7 @@ package check
 
 import (
 	"context"
+	"net"
 	"time"
 )
 
@@ -55,6 +56,12 @@ type Target struct {
 	Secret        string
 	Timeout       time.Duration
 	NASIdentifier string
+
+	// LocalAddr is the source address to bind outgoing sockets to (--bind), for
+	// pinning the outgoing interface on a multi-homed host. nil = OS default.
+	// Whatever source IP results is what the server sees and what the
+	// registration hint reports.
+	LocalAddr net.Addr
 
 	// NAS attributes make the probe's request look like a real 802.1X client so
 	// server network policies (which key on these) evaluate the same way.

@@ -27,6 +27,25 @@ services:
       - ./config/authorize:/etc/raddb/mods-config/files/authorize:ro
       - ./config/radsec:/etc/raddb/sites-enabled/radsec:ro
 
+  # A second RADIUS server, for exercising multi-server comparison
+  # (`radius test --server 127.0.0.1,127.0.0.1:11814`). It's the fixture for the
+  # split-brain story: stop this one and the comparison verdict flips to
+  # "primary healthy, secondary NOT responding — ~50% of auths would fail".
+  # Bridge network with a published port so it doesn't clash with the host-net
+  # primary; requests arrive from the bridge gateway, so it accepts any source IP
+  # (throwaway lab secret, never production).
+  #
+  #   docker compose -f test/lab/docker-compose.yml up   # brings up both servers
+  #   authhound-probe radius test --server 127.0.0.1,127.0.0.1:11814 --secret testing123
+  freeradius-secondary:
+    image: freeradius/freeradius-server:latest
+    command: ["-fxx", "-l", "stdout"]
+    ports:
+      - "127.0.0.1:11814:1812/udp"
+    volumes:
+      - ./config/authorize:/etc/raddb/mods-config/files/authorize:ro
+      - ./config/clients-flaky:/etc/raddb/clients.conf:ro
+
   # Flaky profile: the same FreeRADIUS behind induced packet loss and jitter,
   # for exercising `radius test --count` against genuinely intermittent
   # failures. Runs on a bridge network (not host) so netem can shape just this

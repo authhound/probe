@@ -12,13 +12,19 @@ import (
 // and the round-trip time. A Message-Authenticator is always included, which
 // is both good hygiene and required by servers hardened against BlastRADIUS
 // (CVE-2024-3596).
-func Exchange(addr string, secret string, p *Packet, timeout time.Duration) (reply *Packet, raw []byte, rtt time.Duration, err error) {
+//
+// localAddr, when non-nil, is the source address the UDP socket binds to
+// (the --bind flag) — the way to pin the outgoing interface on a multi-homed
+// host. The chosen source IP is what the RADIUS server sees, and it is exactly
+// what TimeoutError.LocalIP reports back so the registration hint stays correct.
+func Exchange(addr string, secret string, p *Packet, timeout time.Duration, localAddr net.Addr) (reply *Packet, raw []byte, rtt time.Duration, err error) {
 	wire, err := p.encode(secret)
 	if err != nil {
 		return nil, nil, 0, err
 	}
 
-	conn, err := net.Dial("udp", addr)
+	dialer := net.Dialer{LocalAddr: localAddr}
+	conn, err := dialer.Dial("udp", addr)
 	if err != nil {
 		return nil, nil, 0, err
 	}
