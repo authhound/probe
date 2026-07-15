@@ -19,10 +19,11 @@ Testing RADIUS server radius.corp.com:1812 (as NAS "authhound-probe")
 
 PASS  RADIUS server answered in 23ms
 PASS  Shared secret is correct (reply signature verified)
+PASS  Server signs its replies with Message-Authenticator (BlastRADIUS-hardened)
 PASS  PEAP-MSCHAPv2 authentication succeeded for alice
 PASS  Server certificate valid for 214 more days, chain looks complete (TLS 1.2)
 
-Verdict: 4 passed, 0 failed, 0 warnings
+Verdict: 5 passed, 0 failed, 0 warnings
 ```
 
 Like `eapol_test` or `radtest`, but the output is readable — one command, no `wpa_supplicant` config file. Add `--json` for scripting, `--nas-port-type ethernet|wireless|virtual` to match how your real NAS presents itself, and `--server-name` to set the expected certificate name.
@@ -58,6 +59,7 @@ Skipped this step? The probe notices: on a first-run timeout it prints this exac
 |---|---|
 | **Reachability** | The server answers on UDP/1812 — and how fast. A timeout means unreachable, not listening, **or the probe isn't whitelisted / the secret is wrong** (servers silently drop unverifiable requests). |
 | **Shared secret** | Cryptographically verifies the server's reply signature. A pass *proves* the secret matches — no more guessing whether "everyone's getting rejected" is a secret problem or something else. |
+| **BlastRADIUS posture** | Observes whether the server signs its replies with a **Message-Authenticator** — the mitigation for the RADIUS/UDP reply-forgery flaw [CVE-2024-3596](https://blastradius.fail) ("BlastRADIUS"). PASS if it does; WARN, with config pointers, if it accepts the probe's (signed) request but replies unsigned. Observation only — see below. |
 | **PAP authentication** | A real login with credentials you supply → Accept or Reject, decoded. Also detects an **MFA/second-factor challenge** and reports it (the probe does not complete push/OTP — see below). |
 | **PEAP-MSCHAPv2** | The method most enterprise 802.1X networks actually run: a real inner authentication inside the PEAP TLS tunnel. Reports success — and verifies the server's own MSCHAPv2 proof (mutual auth) — or the decoded reason on rejection. The "can my users actually log in?" test. |
 | **EAP-TTLS (PAP)** | A real login inside the TTLS tunnel using inner PAP. Because the password is checked in cleartext (safe inside the tunnel), TTLS-PAP works against *any* backend — including hashed stores that MSCHAPv2 can't use. If PEAP-MSCHAPv2 fails but this passes, the directory can't produce an NT hash. |
@@ -70,6 +72,17 @@ Skipped this step? The probe notices: on a first-run timeout it prints this exac
 ### A note on MFA / two-factor
 
 If the server issues an MFA challenge after valid primary credentials, the probe reports that boundary — *"primary auth healthy, second factor required"* — but does **not** approve a push or submit an OTP. Completing a second factor from an unattended probe would mean storing a live MFA secret, which this tool refuses to do. For monitoring, point it at a **test account exempt from MFA** so the primary RADIUS path is validated cleanly.
+
+### BlastRADIUS / Message-Authenticator posture
+
+[BlastRADIUS (CVE-2024-3596)](https://blastradius.fail), disclosed in 2024, lets an on-path attacker forge RADIUS/UDP responses by exploiting the protocol's MD5-based Response Authenticator. The mitigation is to enforce a **Message-Authenticator** attribute in **both** directions (and, longer term, to move to RadSec). Most deployments still haven't hardened.
+
+The probe already includes a Message-Authenticator in every request it sends. This check then **observes** the reply: does the server sign it back?
+
+- **PASS** — the server returned a valid Message-Authenticator. That path is hardened.
+- **WARN** — the server accepted our signed request but replied **without** a Message-Authenticator, so responses to this probe's client entry are forgeable. The output includes paste-ready pointers: `require_message_authenticator` / `limit_proxy_state` for FreeRADIUS, the Microsoft NPS July-2024 hardening update, and `radsec test` as the durable fix.
+
+This is **observation only** — a single, normal authentication exchange, never any attack technique. And it is honest about scope: it can only speak to how the server treats **this probe's client entry** (a server may sign for one client and not another). In `--json`, the result carries `blastradius_posture: "signed" | "unsigned"`.
 
 ### Machine auth (NPS)
 

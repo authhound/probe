@@ -48,6 +48,30 @@ services:
       - ./config/authorize:/etc/raddb/mods-config/files/authorize:ro
       - ./config/clients-flaky:/etc/raddb/clients.conf:ro
 
+  # Unhardened profile: an OLDER FreeRADIUS (3.2.3) that predates the
+  # CVE-2024-3596 ("BlastRADIUS") reply-signing fix. It accepts the probe's
+  # signed Access-Request but replies WITHOUT a Message-Authenticator, so
+  # `radius test` reports the BlastRADIUS posture check as WARN (unsigned) —
+  # the state most un-upgraded servers are still in. The current `latest`
+  # server above signs its replies and reports PASS.
+  #
+  #   docker compose -f test/lab/docker-compose.yml --profile unhardened up
+  #   authhound-probe radius test --server 127.0.0.1:11813 --secret testing123
+  #
+  # Bridge network with a published port (so it doesn't clash with the host-net
+  # server); requests arrive from the bridge gateway, so it accepts any source IP
+  # (throwaway lab secret, never production). Note the 3.2.x image's config dir is
+  # /etc/freeradius, not /etc/raddb.
+  freeradius-unhardened:
+    image: freeradius/freeradius-server:3.2.3
+    profiles: [unhardened]
+    command: ["-fxx", "-l", "stdout"]
+    ports:
+      - "127.0.0.1:11813:1812/udp"
+    volumes:
+      - ./config/authorize:/etc/freeradius/mods-config/files/authorize:ro
+      - ./config/clients-flaky:/etc/freeradius/clients.conf:ro
+
   # netem sidecar: joins the flaky server's network namespace and drops ~25% of
   # its replies with 30ms±20ms delay — lost requests and latency jitter, the two
   # things --count exists to expose. NET_ADMIN is scoped to the sidecar and that
