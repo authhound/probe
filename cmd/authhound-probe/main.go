@@ -130,7 +130,7 @@ func cmdRadsecTest(args []string) int {
 	server := fs.String("server", "", "RadSec server host or host:port (default port 2083)")
 	clientCert := fs.String("client-cert", "", "client certificate (PEM) for mutual TLS; optional")
 	clientKey := fs.String("client-key", "", "client private key (PEM); required with --client-cert")
-	serverName := fs.String("server-name", "", "expected server certificate name (TLS SNI); optional")
+	serverName := fs.String("server-name", "", "name the server certificate must be valid for (also sent as TLS SNI); omitted = name validation skipped and reported as a warning")
 	timeout := fs.Duration("timeout", 5*time.Second, "connection/handshake timeout")
 	jsonOut := fs.Bool("json", false, "emit results as JSON instead of text")
 	noColor := fs.Bool("no-color", false, "disable ANSI colour")
@@ -187,7 +187,7 @@ func cmdRadiusTest(args []string) int {
 	clientKey := fs.String("client-key", "", "client private key (PEM) for the EAP-TLS test")
 	nasID := fs.String("nas-id", "authhound-probe", "NAS-Identifier to send")
 	nasPortType := fs.String("nas-port-type", "wireless", "NAS-Port-Type: wireless, ethernet, or virtual")
-	serverName := fs.String("server-name", "", "expected server certificate name (TLS SNI); optional")
+	serverName := fs.String("server-name", "", "name the server certificate must be valid for (also sent as TLS SNI); omitted = name validation skipped and reported as a warning")
 	expectVLAN := fs.String("expect-vlan", "", "assert the Access-Accept assigns this VLAN (Tunnel-Private-Group-ID); a mismatch is a FAIL")
 	var expectAttr stringSliceFlag
 	fs.Var(&expectAttr, "expect-attr", "assert a returned authorization attribute as 'Name=Value' (repeatable); a mismatch is a FAIL")
