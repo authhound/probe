@@ -55,6 +55,17 @@ $ go run ./cmd/authhound-probe radius test \
     --server 127.0.0.1:11812 --secret testing123 --pap alice:pw --count 10
 ```
 
+The `unhardened` profile starts an **older FreeRADIUS (3.2.3)** that predates the
+CVE-2024-3596 ("BlastRADIUS") reply-signing fix, published on `127.0.0.1:11813` —
+the fixture for the BlastRADIUS posture check's **WARN** (unsigned reply). The
+default `latest` server signs its replies and reports **PASS**:
+
+```console
+$ docker compose -f test/lab/docker-compose.yml --profile unhardened up
+$ go run ./cmd/authhound-probe radius test \
+    --server 127.0.0.1:11813 --secret testing123      # -> BlastRADIUS posture WARN
+```
+
 ### Run the UDP checks
 
 ```console

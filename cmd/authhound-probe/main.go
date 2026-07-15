@@ -305,6 +305,7 @@ func cmdRadiusTest(args []string) int {
 		Checks: []check.Check{
 			check.Reachability{},
 			check.SharedSecret{},
+			check.BlastRADIUS{},
 			check.PAP{User: papUser, Pass: papPass},
 			check.PEAPMSCHAPv2{User: peapUser, Pass: peapPass, ServerName: *serverName},
 			check.EAPTTLS{User: ttlsUser, Pass: ttlsPass, ServerName: *serverName},

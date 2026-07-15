@@ -20,6 +20,7 @@ type fakeServer struct {
 	goodUser    string
 	goodPass    string
 	silent      bool   // if true, never replies (simulates unwhitelisted client)
+	signMsgAuth bool   // if true, sign replies with a Message-Authenticator (BlastRADIUS-hardened)
 	acceptAttrs []byte // raw attribute bytes appended to an Access-Accept
 	conn        *net.UDPConn
 }
@@ -68,7 +69,16 @@ func (fs *fakeServer) buildReply(req []byte) []byte {
 	// Access-Accept may carry authorization attributes (VLAN/Filter-Id/…).
 	var attrs []byte
 	if code == 2 {
-		attrs = fs.acceptAttrs
+		attrs = append(attrs, fs.acceptAttrs...)
+	}
+	// A BlastRADIUS-hardened server signs its replies with a
+	// Message-Authenticator (RFC 3579); reserve its 16-octet slot here and fill
+	// it once the packet is laid out.
+	maOff := -1
+	if fs.signMsgAuth {
+		maOff = 20 + len(attrs) + 2
+		attrs = append(attrs, 80, 18) // Message-Authenticator, length 18
+		attrs = append(attrs, make([]byte, 16)...)
 	}
 
 	// Build reply: Code, ID, Length, ResponseAuthenticator, Attrs.
@@ -81,6 +91,15 @@ func (fs *fakeServer) buildReply(req []byte) []byte {
 	signSecret := fs.secret
 	if fs.wrongSecret != "" {
 		signSecret = fs.wrongSecret
+	}
+	// Message-Authenticator is computed first (its value must be final before
+	// the Response Authenticator covers the attributes): HMAC-MD5 over the packet
+	// with the request authenticator in the auth field and the MA field zeroed.
+	if maOff >= 0 {
+		copy(reply[4:20], req[4:20])
+		mac := hmac.New(md5.New, []byte(signSecret))
+		mac.Write(reply)
+		copy(reply[maOff:maOff+16], mac.Sum(nil))
 	}
 	// ResponseAuth = MD5(Code+ID+Len+RequestAuth+Attrs+Secret)
 	h := md5.New()

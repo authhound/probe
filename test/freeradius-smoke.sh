@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 
 SECRET="testing123"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"; docker rm -f ah-freeradius ah-freeradius-nc ah-freeradius-flaky ah-netem >/dev/null 2>&1 || true' EXIT
+trap 'rm -rf "$work"; docker rm -f ah-freeradius ah-freeradius-nc ah-freeradius-flaky ah-netem ah-unhardened >/dev/null 2>&1 || true' EXIT
 
 # One test user for the PAP check, plus a machine identity for the NPS-style
 # machine-auth check. This file replaces the default authorize file; a single
@@ -131,6 +131,60 @@ echo "== correct secret + PAP + PEAP-MSCHAPv2 + EAP-TTLS + EAP-TLS + MTU (expect
 "$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" \
   --pap 'alice:pw' --peap 'alice:pw' --ttls 'alice:pw' \
   --client-cert "$work/cert.pem" --client-key "$work/key.pem" --mtu --no-color || true
+
+echo
+echo "== BlastRADIUS posture: hardened FreeRADIUS signs replies (expect PASS) =="
+# The probe always includes a Message-Authenticator in its request; a patched
+# (post-CVE-2024-3596) FreeRADIUS echoes one in its reply. The posture check
+# observes that and PASSes. This is observation only — a normal exchange.
+set +e
+bp_hard="$("$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" --no-color)"
+bp_hard_json="$("$work/authhound-probe" radius test --server 127.0.0.1 --secret "$SECRET" --json)"
+set -e
+echo "$bp_hard" | grep -qi "signs its replies with Message-Authenticator" || { echo "FAIL: hardened server should PASS the BlastRADIUS posture check"; exit 1; }
+echo "$bp_hard_json" | grep -q '"blastradius_posture": "signed"' || { echo "FAIL: --json should report blastradius_posture=signed"; exit 1; }
+if echo "$bp_hard$bp_hard_json" | grep -q "$SECRET"; then echo "FAIL: secret leaked into BlastRADIUS output"; exit 1; fi
+echo "OK: hardened FreeRADIUS signs replies -> BlastRADIUS posture PASS (signed)"
+
+echo
+echo "== BlastRADIUS posture: unhardened FreeRADIUS does NOT sign (expect WARN) =="
+# FreeRADIUS 3.2.3 predates the CVE-2024-3596 reply-signing fix: it accepts our
+# signed request but replies WITHOUT a Message-Authenticator — the exposed state
+# most un-upgraded servers are still in, and the one config a knob can't undo on
+# a patched build. Same lab server, older (unhardened) build, on a published
+# bridge port so it doesn't clash with the host-net one. Permissive client entry
+# (any source IP) because requests arrive via the Docker bridge gateway.
+# Throwaway lab secret, never production.
+cat > "$work/clients-unhardened" <<'EOF'
+client lab {
+	ipaddr = 0.0.0.0/0
+	secret = testing123
+}
+EOF
+docker run -d --rm --name ah-unhardened -p 127.0.0.1:11813:1812/udp \
+  -v "$work/authorize:/etc/freeradius/mods-config/files/authorize:ro" \
+  -v "$work/clients-unhardened:/etc/freeradius/clients.conf:ro" \
+  freeradius/freeradius-server:3.2.3 -fxx -l stdout >/dev/null
+for i in $(seq 1 30); do
+  if docker logs ah-unhardened 2>&1 | grep -q "Ready to process requests"; then break; fi
+  sleep 0.5
+done
+# The BlastRADIUS check must WARN. (The old 3.2.3 image also ships an expired
+# bootstrap server cert, so the run as a whole FAILs on server-cert — unrelated
+# to this posture; the WARN-doesn't-flip-exit semantics are covered by the RadSec
+# cert-expiry --strict test below, so we only assert the posture result here.)
+set +e
+bp_warn="$("$work/authhound-probe" radius test --server 127.0.0.1:11813 --secret "$SECRET" --no-color)"
+bp_warn_json="$("$work/authhound-probe" radius test --server 127.0.0.1:11813 --secret "$SECRET" --json)"
+set -e
+echo "$bp_warn" | grep -A6 -i "BlastRADIUS-exposed"
+echo "$bp_warn" | grep -qi "replied WITHOUT Message-Authenticator" || { echo "FAIL: unhardened server should WARN on the BlastRADIUS posture check"; exit 1; }
+echo "$bp_warn" | grep -q "require_message_authenticator" || { echo "FAIL: WARN hint should point at require_message_authenticator"; exit 1; }
+echo "$bp_warn" | grep -q "radsec test" || { echo "FAIL: WARN hint should point at radsec as the durable fix"; exit 1; }
+echo "$bp_warn_json" | grep -q '"blastradius_posture": "unsigned"' || { echo "FAIL: --json should report blastradius_posture=unsigned"; exit 1; }
+if echo "$bp_warn$bp_warn_json" | grep -q "$SECRET"; then echo "FAIL: secret leaked into BlastRADIUS output"; exit 1; fi
+docker rm -f ah-unhardened >/dev/null 2>&1 || true
+echo "OK: unhardened FreeRADIUS omits reply Message-Authenticator -> BlastRADIUS posture WARN (unsigned)"
 
 echo
 echo "== machine auth: host/ identity via PEAP-MSCHAPv2 (NPS-style, expect PASS) =="

@@ -62,12 +62,12 @@ Each entry in `results`:
 
 | Field | Type | Presence | Notes |
 |---|---|---|---|
-| `check` | string | always | Stable identifier for the check, e.g. `reachability`, `shared-secret`, `pap`, `peap-mschapv2`, `eap-ttls`, `eap-tls`, `server-cert`, `mtu`, `radsec-connect`, `radsec-tls`, `radsec-cert`, `radsec-radius`. |
+| `check` | string | always | Stable identifier for the check, e.g. `reachability`, `shared-secret`, `blastradius-posture`, `pap`, `peap-mschapv2`, `eap-ttls`, `eap-tls`, `server-cert`, `mtu`, `radsec-connect`, `radsec-tls`, `radsec-cert`, `radsec-radius`. |
 | `status` | string | always | One of `pass`, `fail`, `warn`, `info`, `skip` (see below). |
 | `summary` | string | always | One plain-English line describing the outcome. |
 | `detail` | string | when present | Extra context. Omitted when empty. |
 | `hint` | string | when present | Multi-line, paste-ready remediation. Newline formatting is significant. Omitted when empty. Never contains secrets. |
-| `fields` | object (string→string) | when present | Structured extras such as `rtt_ms`, `tls_version`, `not_after`, `subject`, `san`, `chain_len`, `source_ip`. `timeout: "true"` marks a request that got no reply at all (a *lost* request, as opposed to a processed rejection). Aggregate verdicts under `--count` add `success_rate`, `attempts`, `successes`, `timeouts`, and `latency_{min,median,p95,max}_ms`. Keys vary by check; values are always strings. Omitted when there are none. |
+| `fields` | object (string→string) | when present | Structured extras such as `rtt_ms`, `tls_version`, `not_after`, `subject`, `san`, `chain_len`, `source_ip`. `blastradius_posture` (on the `blastradius-posture` check) is `"signed"` or `"unsigned"` — whether the server signed its reply with a Message-Authenticator (see [BlastRADIUS posture](../README.md#blastradius--message-authenticator-posture)). `timeout: "true"` marks a request that got no reply at all (a *lost* request, as opposed to a processed rejection). Aggregate verdicts under `--count` add `success_rate`, `attempts`, `successes`, `timeouts`, and `latency_{min,median,p95,max}_ms`. Keys vary by check; values are always strings. Omitted when there are none. |
 | `duration_ns` | integer | when present | How long the check took, in nanoseconds. Omitted when zero. |
 | `authorization` | object | when present | On an auth check that reached an Access-Accept, the authorization attributes the server returned (VLAN/Filter-Id/…) and the outcome of any `--expect-vlan`/`--expect-attr` assertions. See below. Omitted otherwise. |
 
