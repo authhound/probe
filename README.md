@@ -678,6 +678,7 @@ Interop reports are especially valuable: run the probe against your RADIUS — a
 - **[authhound-probe vs eapol_test vs radtest](docs/COMPARISON.md)** — a factual comparison, including when the classics are the better tool.
 - **[SECURITY.md](SECURITY.md)** — the one-page threat model and vulnerability reporting.
 - Already have a log to read? Paste FreeRADIUS debug output or a Windows NPS event into the free [RADIUS log analyzer](https://authhound.com/analyzer) for a plain-English diagnosis.
+- Registering the probe as a RADIUS client? Generate the `clients.conf` block or the NPS PowerShell one-liner with the free [RADIUS client config generator](https://authhound.com/tools/radius-client-config/) — runs in your browser, nothing is uploaded.
 
 ## License
 
