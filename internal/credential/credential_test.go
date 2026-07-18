@@ -43,7 +43,7 @@ func TestResolveInlineNoTTY(t *testing.T) {
 
 func TestResolveInlineOnTTYWarns(t *testing.T) {
 	p, stderr := newPrompter(true, "", "", nil)
-	got, err := p.Resolve(Spec{Name: "shared secret", Inline: "s3cret", InlineSet: true, EnvVar: "AUTHHOUND_SECRET"})
+	got, err := p.Resolve(Spec{Name: "shared secret", Inline: "s3cret", InlineSet: true, EnvVar: "AUTHHOUND_RADIUS_SECRET"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,9 +109,9 @@ func TestResolveFileRefusesWorldReadable(t *testing.T) {
 }
 
 func TestResolveEnvFallback(t *testing.T) {
-	t.Setenv("AUTHHOUND_SECRET", "from-env")
+	t.Setenv("AUTHHOUND_RADIUS_SECRET", "from-env")
 	p, _ := newPrompter(false, "", "", nil)
-	got, err := p.Resolve(Spec{Name: "shared secret", EnvVar: "AUTHHOUND_SECRET", Required: true})
+	got, err := p.Resolve(Spec{Name: "shared secret", EnvVar: "AUTHHOUND_RADIUS_SECRET", Required: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,13 +121,13 @@ func TestResolveEnvFallback(t *testing.T) {
 }
 
 func TestResolvePrecedenceFileBeatsEnv(t *testing.T) {
-	t.Setenv("AUTHHOUND_SECRET", "from-env")
+	t.Setenv("AUTHHOUND_RADIUS_SECRET", "from-env")
 	path := filepath.Join(t.TempDir(), "sec")
 	if err := os.WriteFile(path, []byte("from-file"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	p, _ := newPrompter(false, "", "", nil)
-	got, err := p.Resolve(Spec{Name: "shared secret", File: path, EnvVar: "AUTHHOUND_SECRET"})
+	got, err := p.Resolve(Spec{Name: "shared secret", File: path, EnvVar: "AUTHHOUND_RADIUS_SECRET"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestResolveExclusiveConflict(t *testing.T) {
 func TestResolvePromptWhenNoSource(t *testing.T) {
 	var prompt string
 	p, _ := newPrompter(true, "", "typed-pw", &prompt)
-	got, err := p.Resolve(Spec{Name: "password for alice", EnvVar: "AUTHHOUND_PASSWORD", Required: true})
+	got, err := p.Resolve(Spec{Name: "password for alice", EnvVar: "AUTHHOUND_RADIUS_PASSWORD", Required: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,18 +179,18 @@ func TestResolvePromptWhenNoSource(t *testing.T) {
 
 func TestResolveRequiredNoTTYErrors(t *testing.T) {
 	p, _ := newPrompter(false, "", "", nil)
-	_, err := p.Resolve(Spec{Name: "shared secret", EnvVar: "AUTHHOUND_SECRET", Required: true})
+	_, err := p.Resolve(Spec{Name: "shared secret", EnvVar: "AUTHHOUND_RADIUS_SECRET", Required: true})
 	if err == nil {
 		t.Fatal("expected an error when required and no source and no TTY")
 	}
-	if !strings.Contains(err.Error(), "AUTHHOUND_SECRET") {
+	if !strings.Contains(err.Error(), "AUTHHOUND_RADIUS_SECRET") {
 		t.Fatalf("error should point at the env var, got %q", err)
 	}
 }
 
 func TestResolveOptionalMissingIsEmpty(t *testing.T) {
 	p, _ := newPrompter(false, "", "", nil)
-	got, err := p.Resolve(Spec{Name: "password for alice", EnvVar: "AUTHHOUND_PASSWORD"})
+	got, err := p.Resolve(Spec{Name: "password for alice", EnvVar: "AUTHHOUND_RADIUS_PASSWORD"})
 	if err != nil {
 		t.Fatal(err)
 	}

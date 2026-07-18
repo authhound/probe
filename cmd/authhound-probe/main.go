@@ -176,7 +176,7 @@ func cmdRadsecTest(args []string) int {
 func cmdRadiusTest(args []string) int {
 	fs := flag.NewFlagSet("radius test", flag.ExitOnError)
 	server := fs.String("server", "", "RADIUS server host or host:port (default port 1812); comma-separate several to compare them (e.g. primary,secondary)")
-	secret := fs.String("secret", "", "shared secret (leaks into shell history/ps — prefer AUTHHOUND_SECRET, --secret-file, or the prompt)")
+	secret := fs.String("secret", "", "shared secret (leaks into shell history/ps — prefer AUTHHOUND_RADIUS_SECRET, --secret-file, or the prompt)")
 	secretFile := fs.String("secret-file", "", "read the shared secret from this file (must not be world-readable on unix)")
 	secretStdin := fs.Bool("secret-stdin", false, "read the shared secret from standard input (one line)")
 	passwordFile := fs.String("password-file", "", "read the auth password from this file, for any --pap/--peap/--ttls given as just 'user'")
@@ -262,7 +262,7 @@ func cmdRadiusTest(args []string) int {
 		InlineSet: provided["secret"],
 		File:      *secretFile,
 		Stdin:     *secretStdin,
-		EnvVar:    "AUTHHOUND_SECRET",
+		EnvVar:    "AUTHHOUND_RADIUS_SECRET",
 		Required:  true,
 		Exclusive: true,
 	})
@@ -590,7 +590,7 @@ func buildExpectations(vlan string, attrs stringSliceFlag) ([]check.Expectation,
 // without ever requiring it on the command line. Empty means the check is
 // skipped. "user:password" uses the inline password (with a TTY warning, since
 // it leaks into history/ps); a bare "user" resolves the password from
-// --password-file, AUTHHOUND_PASSWORD, or an interactive prompt. A password may
+// --password-file, AUTHHOUND_RADIUS_PASSWORD, or an interactive prompt. A password may
 // contain colons; only the first colon splits.
 func resolveCreds(p credential.Prompter, v, flagName, passwordFile string) (user, pass string, err error) {
 	if v == "" {
@@ -605,7 +605,7 @@ func resolveCreds(p credential.Prompter, v, flagName, passwordFile string) (user
 		Inline:    inlinePass,
 		InlineSet: hasColon,
 		File:      passwordFile,
-		EnvVar:    "AUTHHOUND_PASSWORD",
+		EnvVar:    "AUTHHOUND_RADIUS_PASSWORD",
 		Required:  true,
 	})
 	if err != nil {

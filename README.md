@@ -11,7 +11,7 @@ A RADIUS server only logs the requests that *reach* it. A huge class of 802.1X f
 `authhound-probe` runs a **real** authentication against your RADIUS server from **inside your network**, acting as a NAS (switch/AP) would, and tells you in plain English which hop is broken. Works with self-hosted **FreeRADIUS** and **Windows NPS**, and with hosted/cloud RADIUS services. No account, no signup, no telemetry — everything you type stays on the host you run it on.
 
 ```console
-$ export AUTHHOUND_SECRET='shared-secret'   # kept out of shell history and `ps`
+$ export AUTHHOUND_RADIUS_SECRET='shared-secret'   # kept out of shell history and `ps`
 $ authhound-probe radius test --server radius.corp.com --peap alice --server-name radius.corp.com
 Enter password for alice:
 
@@ -101,7 +101,7 @@ $ authhound-probe radius test --server nps.corp.local \
 ```
 
 (The identity has no colon, so `host/PC-01.corp.local:<pw>` splits correctly on
-the first `:` into identity + password. As always, prefer `AUTHHOUND_PASSWORD` or
+the first `:` into identity + password. As always, prefer `AUTHHOUND_RADIUS_PASSWORD` or
 `--password-file` over an inline password.)
 
 **The honest boundary: getting a machine password.** A real computer account's
@@ -138,7 +138,7 @@ Reachability, shared-secret, and server-certificate checks run automatically —
 login credentials needed:
 
 ```console
-$ export AUTHHOUND_SECRET='shared-secret'
+$ export AUTHHOUND_RADIUS_SECRET='shared-secret'
 $ authhound-probe radius test --server radius.corp.com
 ```
 
@@ -147,7 +147,7 @@ Add an authentication test with the method your network actually uses. Give
 the password:
 
 ```console
-$ export AUTHHOUND_SECRET='shared-secret'
+$ export AUTHHOUND_RADIUS_SECRET='shared-secret'
 
 # PEAP-MSCHAPv2 — what most enterprise Wi-Fi / 802.1X runs
 $ authhound-probe radius test --server radius.corp.com --peap alice
@@ -172,10 +172,10 @@ $ authhound-probe radius test --server radius.corp.com \
 ```
 
 For non-interactive use (RMM, cron), supply the password without a prompt via
-`AUTHHOUND_PASSWORD` or `--password-file`:
+`AUTHHOUND_RADIUS_PASSWORD` or `--password-file`:
 
 ```console
-$ AUTHHOUND_SECRET='shared-secret' AUTHHOUND_PASSWORD='pw' \
+$ AUTHHOUND_RADIUS_SECRET='shared-secret' AUTHHOUND_RADIUS_PASSWORD='pw' \
     authhound-probe radius test --server radius.corp.com --peap alice --json
 ```
 
@@ -195,7 +195,7 @@ $ authhound-probe radsec test --server radius.corp.com \
 | Flag | Purpose |
 |---|---|
 | `--server HOST[:port]` | RADIUS server (default port 1812). **Required.** Comma-separate several to compare them — see [Comparing servers](#liveness--comparing-servers). |
-| `--secret SECRET` | Shared secret (**required**, but prefer `AUTHHOUND_SECRET` / `--secret-file` / `--secret-stdin` — see [below](#where-credentials-come-from)). |
+| `--secret SECRET` | Shared secret (**required**, but prefer `AUTHHOUND_RADIUS_SECRET` / `--secret-file` / `--secret-stdin` — see [below](#where-credentials-come-from)). |
 | `--secret-file FILE` | Read the shared secret from a file (must not be world-readable on unix). |
 | `--secret-stdin` | Read the shared secret from standard input (one line). |
 | `--pap user[:pass]` | Run a PAP test. Give just `user` to be prompted for the password. |
@@ -290,7 +290,7 @@ When the complaint is "Wi-Fi drops people randomly" or "auth works, except when
 it doesn't", run the same checks repeatedly and look at the distribution:
 
 ```console
-$ export AUTHHOUND_SECRET='shared-secret'
+$ export AUTHHOUND_RADIUS_SECRET='shared-secret'
 $ authhound-probe radius test --server radius.corp.com --peap alice --count 10
 
 Running 10 iterations, 2s apart
@@ -348,7 +348,7 @@ sometimes" tickets, and a single-server test can't see it. Comma-separate the
 servers and the probe tests each, then prints a comparison:
 
 ```console
-$ export AUTHHOUND_SECRET='shared-secret'
+$ export AUTHHOUND_RADIUS_SECRET='shared-secret'
 $ authhound-probe radius test --server radius1.corp.com,radius2.corp.com --pap alice
 
 === Server 1/2: radius1.corp.com:1812 ===
@@ -441,7 +441,7 @@ password can come from any of these, checked in this order (**first match wins**
 | Explicit flag file | `--secret-file FILE` | `--password-file FILE` |
 | Standard input | `--secret-stdin` | *(pipe the secret; give the password another way)* |
 | Inline on the command line | `--secret VALUE` | `--pap user:pass` (and `--peap`, `--ttls`) |
-| Environment variable | `AUTHHOUND_SECRET` | `AUTHHOUND_PASSWORD` |
+| Environment variable | `AUTHHOUND_RADIUS_SECRET` | `AUTHHOUND_RADIUS_PASSWORD` |
 | Interactive prompt (no echo) | when stdin is a terminal and no source above is set | give `--pap/--peap/--ttls` as just `user` |
 
 Notes:
@@ -450,7 +450,29 @@ Notes:
   giving more than one is an error, so there's no silent surprise about which won.
 - **File sources must not be world-readable** on Linux/macOS: the probe refuses a
   secret/password file that group or others can read and tells you to `chmod 600`
-  it. Files trim exactly one trailing newline, so `printf 'secret\n' > f` is fine.
+  it. (Windows has no unix mode bits, so this check is skipped there — rely on
+  NTFS permissions instead.)
+- **A credential file holds the raw value and nothing else** — no quotes, no
+  `secret = ...` syntax, no comments, one credential per file. The entire file
+  becomes the value, minus exactly one trailing line ending (`\n` or `\r\n`), so
+  the final newline your editor or `printf 'secret\n'` adds is harmless. Anything
+  beyond that is kept deliberately (a secret that really ends in a space
+  survives) — which means an extra blank line, leading whitespace, or a hidden
+  byte-order mark makes the probe use a *different* secret than you think, and
+  the symptom is a shared-secret FAIL, not a file error. Create one safely:
+
+  ```console
+  $ (umask 077; printf '%s\n' 'the-shared-secret' > radius.secret)
+  ```
+
+  On Windows, older PowerShell defaults write a hidden BOM; force plain ASCII:
+
+  ```powershell
+  PS> Set-Content -Path radius.secret -Value 'the-shared-secret' -Encoding ascii
+  ```
+
+  `--password-file` follows the same rules and holds only the password — the
+  username still comes from the flag (`--peap alice`).
 - **Environment variables are convenient but not private from the same user.**
   Another process running as *you* can read `/proc/<pid>/environ`. For untrusted
   multi-user boxes, prefer a `chmod 600` file or the interactive prompt.
@@ -461,7 +483,7 @@ Notes:
   ```
 
   (Piping the secret into stdin means there's no terminal left to prompt on, so
-  supply the password via `AUTHHOUND_PASSWORD` or `--password-file` in that case.)
+  supply the password via `AUTHHOUND_RADIUS_PASSWORD` or `--password-file` in that case.)
 - **The inline `--secret VALUE` and `--pap user:pass` forms still work** for a
   quick lab test, but on a terminal they print a one-line warning reminding you
   they leak into history and `ps`. Credential values are never echoed back, never
@@ -618,7 +640,7 @@ schtasks /Create /TN "AuthHound RADIUS probe" /SC MINUTE /MO 15 /RU SYSTEM /RL H
   "cmd /c C:\Tools\authhound-probe.exe radius test --server nps.corp.local --server-name nps.corp.local --peap svc-radius-probe --json --strict >> C:\Tools\probe.log 2>&1"
 ```
 
-Supply credentials via the environment for the task's account (`AUTHHOUND_SECRET`, `AUTHHOUND_PASSWORD`) or `--secret-file`/`--password-file` pointing at a file only that account can read — see [Where credentials come from](#where-credentials-come-from). Because the probe exits `1` on failure (or on a warning under `--strict`), Task Scheduler's **Last Run Result** reflects health directly: `0x0` healthy, `0x1` something needs attention. Point your existing task-result monitoring at that, or tail `probe.log`.
+Supply credentials via the environment for the task's account (`AUTHHOUND_RADIUS_SECRET`, `AUTHHOUND_RADIUS_PASSWORD`) or `--secret-file`/`--password-file` pointing at a file only that account can read — see [Where credentials come from](#where-credentials-come-from). Because the probe exits `1` on failure (or on a warning under `--strict`), Task Scheduler's **Last Run Result** reflects health directly: `0x0` healthy, `0x1` something needs attention. Point your existing task-result monitoring at that, or tail `probe.log`.
 
 ## Colour and Windows terminals
 

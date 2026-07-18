@@ -7,7 +7,7 @@
 // order:
 //
 //  1. an explicit flag: --secret-stdin, --secret-file, or the plain --secret VALUE
-//  2. an environment variable (AUTHHOUND_SECRET / AUTHHOUND_PASSWORD)
+//  2. an environment variable (AUTHHOUND_RADIUS_SECRET / AUTHHOUND_RADIUS_PASSWORD)
 //  3. an interactive no-echo prompt (when stdin is a terminal)
 //
 // The plain inline forms (--secret VALUE, --pap user:pass) still work for lab use

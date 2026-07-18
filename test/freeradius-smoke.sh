@@ -250,11 +250,11 @@ if echo "$pjson" | grep -q "$SECRET"; then echo "FAIL: secret leaked into JSON";
 echo "OK: PEAP-MSCHAPv2 surfaced the Access-Accept VLAN and the assertion passed over JSON"
 
 echo
-echo "== same, but secret via AUTHHOUND_SECRET + password via --password-file (expect PASS) =="
+echo "== same, but secret via AUTHHOUND_RADIUS_SECRET + password via --password-file (expect PASS) =="
 # Exercises the credential paths that keep secrets off the command line: the
 # shared secret from the environment and the password from a chmod-600 file.
 printf '%s' "pw" > "$work/pw.txt"; chmod 600 "$work/pw.txt"
-AUTHHOUND_SECRET="$SECRET" "$work/authhound-probe" radius test --server 127.0.0.1 \
+AUTHHOUND_RADIUS_SECRET="$SECRET" "$work/authhound-probe" radius test --server 127.0.0.1 \
   --pap 'alice' --password-file "$work/pw.txt" --no-color || true
 
 echo
@@ -415,7 +415,7 @@ echo "$out" | grep -q "ipaddr = 127.0.0.1" || { echo "FAIL: hint missing detecte
 echo "$out" | grep -q "New-NpsRadiusClient" || { echo "FAIL: hint missing NPS one-liner"; exit 1; }
 if echo "$out" | grep -q "$SECRET"; then echo "FAIL: secret leaked into text output"; exit 1; fi
 
-json="$(AUTHHOUND_SECRET="$SECRET" "$work/authhound-probe" radius test --server 127.0.0.1 --timeout 2s --json || true)"
+json="$(AUTHHOUND_RADIUS_SECRET="$SECRET" "$work/authhound-probe" radius test --server 127.0.0.1 --timeout 2s --json || true)"
 echo "$json" | grep -q '"hint"' || { echo "FAIL: --json missing hint field"; exit 1; }
 echo "$json" | grep -q '"source_ip": "127.0.0.1"' || { echo "FAIL: --json missing source_ip field"; exit 1; }
 # Status-Server degrades gracefully: an unanswered probe is INFO (supported=false),
