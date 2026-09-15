@@ -133,12 +133,14 @@ func decodeVSA(v []byte) []AuthAttr {
 	vendor := binary.BigEndian.Uint32(v[0:4])
 	rest := v[4:]
 	var out []AuthAttr
+	skippedKeys := false
 	for len(rest) >= 2 {
 		vtype := rest[0]
 		vlen := int(rest[1])
 		if isKeyingVSA(vendor, vtype) {
 			// MS-MPPE-Send-Key / Recv-Key carry encrypted session key material,
 			// not authorization. Never surface key bytes (trust: no secrets out).
+			skippedKeys = true
 			if vlen >= 2 && vlen <= len(rest) {
 				rest = rest[vlen:]
 				continue
@@ -165,7 +167,7 @@ func decodeVSA(v []byte) []AuthAttr {
 		})
 		rest = rest[vlen:]
 	}
-	if out == nil {
+	if out == nil && !skippedKeys {
 		out = append(out, AuthAttr{Name: fmt.Sprintf("Vendor-%d", vendor), Value: printableOrHex(rest), Raw: hex.EncodeToString(rest), Vendor: int(vendor)})
 	}
 	return out

@@ -65,11 +65,12 @@ func CompareServers(runs []ServerRun) Comparison {
 	return c
 }
 
-// serverResponded reports whether the reachability check passed for a run.
+// serverResponded reports whether the reachability check got a reply for a
+// run: PASS, or WARN (a reply that needed a retransmit is still a reply).
 func serverResponded(results []Result) bool {
 	for _, r := range results {
 		if r.Check == "reachability" {
-			return r.Status == StatusPass
+			return r.Status == StatusPass || r.Status == StatusWarn
 		}
 	}
 	return false

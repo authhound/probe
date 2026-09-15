@@ -18,6 +18,7 @@ import (
 // server-side log looks clean. Opt-in via --mtu (it sends a handful of probes).
 type MTUProbe struct {
 	Enabled bool
+	Base    *BaseExchange // reachability outcome; nil = always attempt
 }
 
 func (MTUProbe) Name() string { return "path-mtu" }
@@ -32,6 +33,9 @@ const (
 func (c MTUProbe) Run(ctx context.Context, t Target) Result {
 	if !c.Enabled {
 		return Result{Check: "path-mtu", Status: StatusSkip, Summary: "Path-MTU probe not run (pass --mtu to enable)"}
+	}
+	if r, skip := c.Base.skipIfUnreachable("path-mtu"); skip {
+		return r
 	}
 	attrs := commonAttrs(t)
 

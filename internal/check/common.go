@@ -34,6 +34,11 @@ func addCommon(p *radius.Packet, t Target) {
 	}
 }
 
+// CredentialRejectedField marks an auth Result where the server processed the
+// credentials and said no. Repeat mode stops on it: re-sending a rejected
+// password N times is how test accounts get locked out.
+const CredentialRejectedField = "credential_rejected"
+
 // TimeoutField marks a Result whose underlying request got no reply, so
 // aggregate reporting (--count) can count lost requests separately from
 // processed rejections. Additive within schema major "1".

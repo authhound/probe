@@ -187,6 +187,8 @@ func cmdRadiusTest(args []string) int {
 	clientKey := fs.String("client-key", "", "client private key (PEM) for the EAP-TLS test")
 	nasID := fs.String("nas-id", "authhound-probe", "NAS-Identifier to send")
 	nasPortType := fs.String("nas-port-type", "wireless", "NAS-Port-Type: wireless, ethernet, or virtual")
+	calledStation := fs.String("called-station-id", "", "Called-Station-Id to send, e.g. 'AA-BB-CC-DD-EE-FF:CorpWiFi' (policies often match the SSID here)")
+	callingStation := fs.String("calling-station-id", "", "Calling-Station-Id to send, e.g. the client MAC '11-22-33-44-55-66' (MAC-based policies match here)")
 	serverName := fs.String("server-name", "", "name the server certificate must be valid for (also sent as TLS SNI); omitted = name validation skipped and reported as a warning")
 	expectVLAN := fs.String("expect-vlan", "", "assert the Access-Accept assigns this VLAN (Tunnel-Private-Group-ID); a mismatch is a FAIL")
 	var expectAttr stringSliceFlag
@@ -274,11 +276,16 @@ func cmdRadiusTest(args []string) int {
 	// Address is set per server below; everything else is shared across a
 	// multi-server comparison.
 	target := check.Target{
-		Secret:        secretValue,
-		Timeout:       *timeout,
-		NASIdentifier: *nasID,
-		NASPortType:   portType,
-		LocalAddr:     localAddr,
+		Secret:         secretValue,
+		Timeout:        *timeout,
+		NASIdentifier:  *nasID,
+		NASPortType:    portType,
+		CalledStation:  *calledStation,
+		CallingStation: *callingStation,
+		LocalAddr:      localAddr,
+	}
+	if provided["timeout"] && *timeout < 2*time.Second {
+		fmt.Fprintf(os.Stderr, "note: --timeout %s is short: FreeRADIUS delays every Access-Reject by 1s (reject_delay), so a rejected reply can be misread as a lost packet; 2s or more is safer\n", *timeout)
 	}
 
 	papUser, papPass, err := resolveCreds(prompter, *pap, "--pap", *passwordFile)
@@ -317,17 +324,21 @@ func cmdRadiusTest(args []string) int {
 	// Status-Server runs first: an RFC 5997 liveness ping that doesn't consume an
 	// auth attempt. The rest follow in dependency order (reachability/secret before
 	// the auth methods that rely on them).
+	// One shared exchange answers reachability, shared-secret and posture (one
+	// rejected-login line in the server log per run instead of three), and its
+	// outcome lets the dependent checks skip at once when the server is silent.
+	base := &check.BaseExchange{}
 	checks := []check.Check{
-		check.StatusServer{},
-		check.Reachability{},
-		check.SharedSecret{},
-		check.BlastRADIUS{},
-		check.PAP{User: papUser, Pass: papPass},
-		check.PEAPMSCHAPv2{User: peapUser, Pass: peapPass, ServerName: *serverName},
-		check.EAPTTLS{User: ttlsUser, Pass: ttlsPass, ServerName: *serverName},
-		check.EAPTLS{CertFile: *clientCert, KeyFile: *clientKey, ServerName: *serverName},
-		check.ServerCert{ServerName: *serverName},
-		check.MTUProbe{Enabled: *mtu},
+		check.StatusServer{Base: base},
+		check.Reachability{Base: base},
+		check.SharedSecret{Base: base},
+		check.BlastRADIUS{Base: base},
+		check.PAP{User: papUser, Pass: papPass, Base: base},
+		check.PEAPMSCHAPv2{User: peapUser, Pass: peapPass, ServerName: *serverName, Base: base},
+		check.EAPTTLS{User: ttlsUser, Pass: ttlsPass, ServerName: *serverName, Base: base},
+		check.EAPTLS{CertFile: *clientCert, KeyFile: *clientKey, ServerName: *serverName, Base: base},
+		check.ServerCert{ServerName: *serverName, Base: base},
+		check.MTUProbe{Enabled: *mtu, Base: base},
 	}
 
 	if len(servers) > 1 {
@@ -368,7 +379,12 @@ func parseServers(raw string) ([]string, error) {
 		if s == "" {
 			continue
 		}
-		if !strings.Contains(s, ":") {
+		switch {
+		case net.ParseIP(s) != nil && strings.Contains(s, ":"):
+			s = "[" + s + "]:1812" // bare IPv6 literal
+		case strings.HasPrefix(s, "[") && !strings.Contains(s, "]:"):
+			s += ":1812" // bracketed IPv6 literal without a port
+		case !strings.HasPrefix(s, "[") && !strings.Contains(s, ":"):
 			s += ":1812"
 		}
 		if seen[s] {
@@ -498,7 +514,9 @@ func runRepeat(plan check.Plan, sink resultSink, count int, interval time.Durati
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}
-	if completed := len(run.Iterations); completed < count {
+	if run.StoppedReason != "" {
+		fmt.Fprintln(os.Stderr, "note:", run.StoppedReason)
+	} else if completed := len(run.Iterations); completed < count {
 		fmt.Fprintf(os.Stderr, "interrupted — aggregating the %d completed iteration(s)\n", completed)
 		if completed == 0 {
 			return 1

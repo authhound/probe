@@ -18,6 +18,7 @@ import (
 type PAP struct {
 	User string
 	Pass string
+	Base *BaseExchange // reachability outcome; nil = always attempt
 }
 
 func (PAP) Name() string { return "pap-auth" }
@@ -30,6 +31,9 @@ func (c PAP) Run(ctx context.Context, t Target) Result {
 		}
 	}
 
+	if r, skip := c.Base.skipIfUnreachable("pap-auth"); skip {
+		return r
+	}
 	p, err := radius.NewAccessRequest(3)
 	if err != nil {
 		return Result{Check: "pap-auth", Status: StatusFail, Summary: "internal error: " + err.Error()}
@@ -53,7 +57,7 @@ func (c PAP) Run(ctx context.Context, t Target) Result {
 			reply, t)
 	case radius.AccessReject:
 		return Result{
-			Check: "pap-auth", Status: StatusFail,
+			Check: "pap-auth", Status: StatusFail, Fields: map[string]string{CredentialRejectedField: "true"},
 			Summary: "PAP authentication rejected for " + c.User,
 			Detail: "The server processed the login and said no. Causes: wrong password; " +
 				"the account can't be checked via PAP (e.g. the backend only stores an " +

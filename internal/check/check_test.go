@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -23,6 +24,16 @@ type fakeServer struct {
 	signMsgAuth bool   // if true, sign replies with a Message-Authenticator (BlastRADIUS-hardened)
 	acceptAttrs []byte // raw attribute bytes appended to an Access-Accept
 	conn        *net.UDPConn
+
+	mu       sync.Mutex
+	requests int
+}
+
+// requestCount reports how many datagrams the server has received.
+func (fs *fakeServer) requestCount() int {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return fs.requests
 }
 
 func startFakeServer(t *testing.T, fs *fakeServer) string {
@@ -48,6 +59,9 @@ func (fs *fakeServer) serve() {
 		if err != nil {
 			return
 		}
+		fs.mu.Lock()
+		fs.requests++
+		fs.mu.Unlock()
 		if fs.silent {
 			continue
 		}
@@ -257,5 +271,69 @@ func TestHMACSanity(t *testing.T) {
 	m.Write([]byte("x"))
 	if len(m.Sum(nil)) != 16 {
 		t.Fatal("unexpected hmac-md5 size")
+	}
+}
+
+// TestBaseExchangeSharedAcrossChecks: reachability, shared-secret and posture
+// must ride on ONE request (one rejected login in the server log), and a
+// silent server must make the dependent checks skip at once.
+func TestBaseExchangeSharedAcrossChecks(t *testing.T) {
+	fs := &fakeServer{secret: "s3cret", signMsgAuth: true}
+	addr := startFakeServer(t, fs)
+	ctx := context.Background()
+	tgt := target(addr, "s3cret")
+	base := &BaseExchange{}
+
+	if r := (Reachability{Base: base}).Run(ctx, tgt); r.Status != StatusPass {
+		t.Fatalf("reachability: got %s (%s)", r.Status, r.Summary)
+	}
+	if r := (SharedSecret{Base: base}).Run(ctx, tgt); r.Status != StatusPass {
+		t.Errorf("shared-secret: got %s (%s)", r.Status, r.Summary)
+	}
+	if r := (BlastRADIUS{Base: base}).Run(ctx, tgt); r.Status != StatusPass {
+		t.Errorf("posture: got %s (%s)", r.Status, r.Summary)
+	}
+	if got := fs.requestCount(); got != 1 {
+		t.Errorf("server saw %d requests for three checks, want 1", got)
+	}
+
+	silent := startFakeServer(t, &fakeServer{secret: "s3cret", silent: true})
+	stgt := target(silent, "s3cret")
+	stgt.Timeout = 300 * time.Millisecond
+	sbase := &BaseExchange{}
+	if r := (Reachability{Base: sbase}).Run(ctx, stgt); r.Status != StatusFail {
+		t.Fatalf("silent reachability: got %s", r.Status)
+	}
+	start := time.Now()
+	r := (PAP{User: "alice", Pass: "pw", Base: sbase}).Run(ctx, stgt)
+	if r.Status != StatusSkip || r.Fields[TimeoutField] != "true" {
+		t.Errorf("pap after unreachable: got %s fields=%v, want skip+timeout", r.Status, r.Fields)
+	}
+	if time.Since(start) > 100*time.Millisecond {
+		t.Errorf("dependent check waited for the network instead of skipping")
+	}
+}
+
+// TestReachabilityUsesStatusServerRTT: when Status-Server answered, the
+// reachability latency comes from it (an Access-Reject is delayed by
+// FreeRADIUS's reject_delay, a Status-Server reply is not).
+func TestReachabilityUsesStatusServerRTT(t *testing.T) {
+	base := &BaseExchange{statusOK: true, statusRTT: 7 * time.Millisecond}
+	addr := startFakeServer(t, &fakeServer{secret: "s3cret"})
+	r := (Reachability{Base: base}).Run(context.Background(), target(addr, "s3cret"))
+	if r.Fields["rtt_source"] != "status-server" || r.Fields["rtt_ms"] != "7" {
+		t.Errorf("fields = %v, want rtt from status-server (7ms)", r.Fields)
+	}
+	if _, ok := r.Fields["auth_rtt_ms"]; !ok {
+		t.Errorf("auth_rtt_ms missing")
+	}
+}
+
+// TestPAPRejectIsMarkedCredentialRejected: the marker repeat mode stops on.
+func TestPAPRejectIsMarkedCredentialRejected(t *testing.T) {
+	addr := startFakeServer(t, &fakeServer{secret: "s3cret", goodUser: "alice", goodPass: "pw"})
+	r := (PAP{User: "alice", Pass: "wrong"}).Run(context.Background(), target(addr, "s3cret"))
+	if r.Fields[CredentialRejectedField] != "true" {
+		t.Errorf("reject not marked: %v", r.Fields)
 	}
 }

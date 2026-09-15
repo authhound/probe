@@ -18,11 +18,16 @@ import (
 // any RADIUS request — an unregistered client is dropped silently, so a timeout
 // here is ambiguous. It therefore never FAILs: a reply is a PASS, and silence is
 // an INFO that defers to the reachability check below rather than guessing.
-type StatusServer struct{}
+type StatusServer struct {
+	Base *BaseExchange // records the undelayed RTT for the reachability check; may be nil
+}
 
 func (StatusServer) Name() string { return "status-server" }
 
-func (StatusServer) Run(ctx context.Context, t Target) Result {
+func (c StatusServer) Run(ctx context.Context, t Target) Result {
+	if c.Base != nil {
+		c.Base.statusOK, c.Base.statusRTT = false, 0
+	}
 	p, err := radius.NewStatusServer(1)
 	if err != nil {
 		return Result{Check: "status-server", Status: StatusInfo, Summary: "internal error building Status-Server request: " + err.Error()}
@@ -35,6 +40,9 @@ func (StatusServer) Run(ctx context.Context, t Target) Result {
 
 	_, _, rtt, err := radius.Exchange(t.Address, t.Secret, p, t.Timeout, t.LocalAddr)
 	if err == nil {
+		if c.Base != nil {
+			c.Base.statusOK, c.Base.statusRTT = true, rtt
+		}
 		return Result{
 			Check: "status-server", Status: StatusPass,
 			Summary: fmt.Sprintf("Server answered Status-Server in %dms (live; no auth attempt consumed)", rtt.Milliseconds()),

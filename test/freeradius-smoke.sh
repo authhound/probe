@@ -102,12 +102,17 @@ echo "== starting FreeRADIUS (debug, threaded for RadSec) =="
 # request's NAS-Port-Type reaches the inner tunnel AND the inner reply's VLAN is
 # copied out to the outer Access-Accept — exactly how real 802.1X VLAN assignment
 # is configured, and what lets the probe read the VLAN over EAP.
+# The image's bundled test certificates are only valid for 60 days from the
+# image build (raddb/certs default_days), so they are regenerated at start;
+# otherwise EAP-TLS and the server-cert check fail for a reason that has
+# nothing to do with the probe.
+REGEN_CERTS='cd /etc/raddb/certs && rm -f ca.pem ca.der ca.key ca.crt server.pem server.crt server.csr server.key client.pem client.crt client.csr client.key client.p12 index.txt* serial* && make >/dev/null 2>&1 && cd /'
 docker run -d --rm --name ah-freeradius --network host \
   -v "$work/authorize:/etc/raddb/mods-config/files/authorize:ro" \
   -v "$work/radsec:/etc/raddb/sites-enabled/radsec:ro" \
   -v "$work/server-short.pem:/etc/raddb/certs/server-short.pem:ro" \
   --entrypoint sh freeradius/freeradius-server:latest -c \
-  "sed -i -E 's/(use_tunneled_reply|copy_request_to_tunnel) = no/\1 = yes/' /etc/raddb/mods-available/eap && exec freeradius -fxx -l stdout" >/dev/null
+  "$REGEN_CERTS && sed -i -E 's/(use_tunneled_reply|copy_request_to_tunnel) = no/\1 = yes/' /etc/raddb/mods-available/eap && exec freeradius -fxx -l stdout" >/dev/null
 
 # Wait for it to be listening.
 for i in $(seq 1 30); do
@@ -355,7 +360,7 @@ EOF
 docker run -d --rm --name ah-secondary -p 127.0.0.1:11814:1812/udp \
   -v "$work/authorize:/etc/raddb/mods-config/files/authorize:ro" \
   -v "$work/clients-secondary:/etc/raddb/clients.conf:ro" \
-  freeradius/freeradius-server:latest -fxx -l stdout >/dev/null
+  --entrypoint sh freeradius/freeradius-server:latest -c "$REGEN_CERTS && exec freeradius -fxx -l stdout" >/dev/null
 for i in $(seq 1 30); do
   if docker logs ah-secondary 2>&1 | grep -q "Ready to process requests"; then break; fi
   sleep 0.5
@@ -403,7 +408,7 @@ client dummy {
 EOF
 docker run -d --rm --name ah-freeradius-nc --network host \
   -v "$work/clients-none:/etc/raddb/clients.conf:ro" \
-  freeradius/freeradius-server:latest -fxx -l stdout >/dev/null
+  --entrypoint sh freeradius/freeradius-server:latest -c "$REGEN_CERTS && exec freeradius -fxx -l stdout" >/dev/null
 for i in $(seq 1 30); do
   if docker logs ah-freeradius-nc 2>&1 | grep -q "Ready to process requests"; then break; fi
   sleep 0.5
@@ -440,7 +445,7 @@ EOF
 docker run -d --rm --name ah-freeradius-flaky -p 127.0.0.1:11812:1812/udp \
   -v "$work/authorize:/etc/raddb/mods-config/files/authorize:ro" \
   -v "$work/clients-flaky:/etc/raddb/clients.conf:ro" \
-  freeradius/freeradius-server:latest -fxx -l stdout >/dev/null
+  --entrypoint sh freeradius/freeradius-server:latest -c "$REGEN_CERTS && exec freeradius -fxx -l stdout" >/dev/null
 docker run -d --rm --name ah-netem --network "container:ah-freeradius-flaky" \
   --cap-add NET_ADMIN alpine:3 sh -c \
   "apk add --no-cache iproute2 >/dev/null && tc qdisc replace dev eth0 root netem loss 25% delay 30ms 20ms && sleep infinity" >/dev/null

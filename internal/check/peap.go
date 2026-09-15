@@ -20,6 +20,7 @@ type PEAPMSCHAPv2 struct {
 	User       string
 	Pass       string
 	ServerName string
+	Base       *BaseExchange // reachability outcome; nil = always attempt
 }
 
 func (PEAPMSCHAPv2) Name() string { return "peap-mschapv2" }
@@ -32,6 +33,9 @@ func (c PEAPMSCHAPv2) Run(ctx context.Context, t Target) Result {
 		}
 	}
 
+	if r, skip := c.Base.skipIfUnreachable("peap-mschapv2"); skip {
+		return r
+	}
 	sess := &radius.EAPSession{
 		Addr:      t.Address,
 		Secret:    t.Secret,
@@ -50,6 +54,12 @@ func (c PEAPMSCHAPv2) Run(ctx context.Context, t Target) Result {
 				". If reachability/secret above failed, fix those first; otherwise the server " +
 				"may not offer PEAP-MSCHAPv2.",
 		}
+		if errors.Is(err, radius.ErrEAPFailure) {
+			r.Detail = "The server ended the PEAP session with EAP-Failure before the password " +
+				"was checked. Usually the identity is rejected up front: the account does not " +
+				"exist, a connection-request/network policy denies it, or the server does not " +
+				"offer PEAP for this client. Check the server's log for identity " + c.User + "."
+		}
 		if errors.Is(err, radius.ErrTimeout) {
 			r = markTimeout(r)
 		}
@@ -57,6 +67,9 @@ func (c PEAPMSCHAPv2) Run(ctx context.Context, t Target) Result {
 	}
 
 	fields := map[string]string{}
+	if sess.Retransmits > 0 {
+		fields["retransmits"] = strconv.Itoa(sess.Retransmits)
+	}
 	if res.Cert != nil && len(res.Cert.Chain) > 0 {
 		fields["server_cert"] = res.Cert.Chain[0].Subject.CommonName
 	}
@@ -77,6 +90,7 @@ func (c PEAPMSCHAPv2) Run(ctx context.Context, t Target) Result {
 	if res.ErrorCode > 0 {
 		fields["mschap_error"] = strconv.Itoa(res.ErrorCode)
 	}
+	fields[CredentialRejectedField] = "true"
 	return Result{
 		Check: "peap-mschapv2", Status: StatusFail, Fields: fields,
 		Summary: fmt.Sprintf("PEAP-MSCHAPv2 rejected %s", c.User),
