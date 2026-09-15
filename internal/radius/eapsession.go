@@ -29,6 +29,10 @@ type EAPSession struct {
 	Attrs     []Attribute // common NAS attributes added to every request
 	LocalAddr net.Addr    // source address to bind (--bind); nil = OS default
 
+	// Retransmits counts datagrams that had to be re-sent during this session
+	// (see radius.ExchangeR): a non-zero value means packet loss on the path.
+	Retransmits int
+
 	radiusID  byte
 	state     []byte // RADIUS State attribute to echo back
 	rounds    int
@@ -59,10 +63,14 @@ func (s *EAPSession) send(eap []byte) (*EAPPacket, Code, error) {
 		p.Add(AttrState, s.state)
 	}
 
-	reply, _, _, err := Exchange(s.Addr, s.Secret, p, s.Timeout, s.LocalAddr)
+	res, err := ExchangeR(s.Addr, s.Secret, p, s.Timeout, s.LocalAddr)
+	if res != nil {
+		s.Retransmits += res.Retransmits
+	}
 	if err != nil {
 		return nil, 0, err
 	}
+	reply := res.Reply
 	s.lastReply = reply
 	if st := reply.Get(AttrState); st != nil {
 		s.state = st
@@ -116,6 +124,11 @@ type CapturedCert struct {
 }
 
 var errCertCaptured = errors.New("certificate captured")
+
+// ErrEAPFailure is returned when the server ends the EAP conversation with an
+// EAP-Failure (normally inside an Access-Reject). Callers use errors.Is to tell
+// "the server said no" apart from transport or protocol errors.
+var ErrEAPFailure = errors.New("server sent EAP-Failure")
 
 // tlsConfig builds the PEAP outer-tunnel TLS config. The server certificate is
 // always captured for reporting. When abort is true, the handshake stops right
@@ -197,6 +210,10 @@ func (s *EAPSession) AuthPEAPMSCHAPv2(ctx context.Context, userName, password, s
 	res.Cert = captured
 	if res.Success {
 		res.Accept = s.driveToAccept(conn)
+	} else if len(conn.outBuf) > 0 {
+		// Ship the buffered failure acknowledgement so the server closes the
+		// session cleanly instead of waiting for it (best-effort).
+		_, _ = conn.exchangeAppData()
 	}
 	return res, nil
 }
@@ -249,10 +266,21 @@ func (s *EAPSession) AuthEAPTLS(ctx context.Context, clientCert tls.Certificate,
 	// doesn't include its issuer — so an untrusted cert produces a clear trust
 	// error instead of silently sending none.
 	cc := clientCert
-	conf.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return &cc, nil }
+	certRequested := false
+	conf.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+		certRequested = true
+		return &cc, nil
+	}
 
 	tc := tls.Client(conn, conf)
 	if hsErr := tc.HandshakeContext(ctx); hsErr != nil {
+		if !certRequested && isEAPFailure(hsErr) {
+			// The server gave up before ever asking for our certificate, so the
+			// certificate cannot be the reason: no common TLS version or cipher
+			// suite, or a policy that rejects this identity up front.
+			return &EAPTLSResult{Success: false, Cert: captured,
+				Reason: "the server aborted the TLS handshake before requesting a client certificate, so the certificate is not the cause — most often no common TLS version or cipher suite (old server, restricted cipher_list), or a policy that rejects this identity before EAP-TLS starts. Check the server's TLS settings and its log for this identity."}, nil
+		}
 		return &EAPTLSResult{Success: false, Reason: explainTLSError(hsErr), Cert: captured}, nil
 	}
 
@@ -294,6 +322,13 @@ func (c *eapTLSConn) exchangeAppData() (Code, error) {
 	resp := (&EAPPacket{Code: EAPResponse, ID: c.curID, Type: c.eapType, Data: data}).Marshal()
 	_, code, err := c.sess.send(resp)
 	return code, err
+}
+
+// isEAPFailure reports whether err is (or wraps, or textually carries) the
+// EAP-Failure sentinel; crypto/tls returns the transport's error as-is, but the
+// string check keeps this robust to wrapping.
+func isEAPFailure(err error) bool {
+	return errors.Is(err, ErrEAPFailure) || strings.Contains(strings.ToLower(err.Error()), "eap-failure")
 }
 
 // explainTLSError turns a Go TLS handshake error into a cause an admin can act
@@ -380,6 +415,14 @@ func runInnerMSCHAPv2(tc innerConn, userName, password string) (*PEAPResult, err
 			if res.ErrorCode != 0 || res.Success {
 				return res, nil // we already have a verdict; a torn-down tail is fine
 			}
+			if isEAPFailure(err) {
+				// The server answered our credentials with an outer Access-Reject /
+				// EAP-Failure and no inner reason. That is a reject, not a broken
+				// exchange (FreeRADIUS sends a Result-TLV first; other servers don't).
+				res.ErrorCode = -1
+				res.ErrorCause = "the server rejected the credentials and gave no inner reason (it ended the session with EAP-Failure): wrong password, or the account/policy denies this user."
+				return res, nil
+			}
 			return nil, fmt.Errorf("reading MSCHAPv2 result: %w", err)
 		}
 		dbg("inner result type=%d datalen=%d", typ, len(data))
@@ -406,7 +449,10 @@ func runInnerMSCHAPv2(tc innerConn, userName, password string) (*PEAPResult, err
 			// PEAPv0 carries the Result-TLV (and its ack) with a full EAP header;
 			// a header-stripped echo makes the server reject the tunnel completion,
 			// so the final Access-Accept (with the VLAN attributes) never arrives.
-			ack := (&EAPPacket{Code: EAPResponse, ID: innerID, Type: EAPTypeTLV, Data: data}).Marshal()
+			// The response carries ONLY a Result TLV. Windows NPS sends a
+			// Crypto-Binding TLV alongside the Result TLV; echoing the server's own
+			// binding back would be an invalid response (NPS reason code 301).
+			ack := (&EAPPacket{Code: EAPResponse, ID: innerID, Type: EAPTypeTLV, Data: resultTLV(data)}).Marshal()
 			_, _ = tc.Write(ack)
 			if success {
 				res.Success = true
@@ -423,6 +469,18 @@ func runInnerMSCHAPv2(tc innerConn, userName, password string) (*PEAPResult, err
 		return res, nil
 	}
 	return nil, errors.New("no PEAP result after the MSCHAPv2 response")
+}
+
+// resultTLV builds the client's Result TLV (draft-josefsson-pppext-eap-tls-eap
+// §4.2 / MS-PEAP): mandatory bit, type 3, length 2, and the same status the
+// server sent (1 = success, 2 = failure). Any other TLVs in the server's packet
+// (Crypto-Binding, SoH) are deliberately not echoed.
+func resultTLV(serverData []byte) []byte {
+	status := byte(2)
+	if len(serverData) >= 6 && serverData[5] == 1 {
+		status = 1
+	}
+	return []byte{0x80, 0x03, 0x00, 0x02, 0x00, status}
 }
 
 // innerConn is the subset of net.Conn / tls.Conn that the inner exchange needs.
@@ -558,7 +616,7 @@ func (c *eapTLSConn) receive(req *EAPPacket, code Code) ([]byte, error) {
 			return server, nil
 		}
 		if req.Code == EAPFailure {
-			return nil, errors.New("server sent EAP-Failure during TLS handshake")
+			return nil, ErrEAPFailure
 		}
 		if req.Type != c.eapType || len(req.Data) < 1 {
 			return nil, fmt.Errorf("unexpected EAP packet (type %d) during handshake", req.Type)

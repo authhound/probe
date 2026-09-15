@@ -58,15 +58,17 @@ Skipped this step? The probe notices: on a first-run timeout it prints this exac
 | Check | What it proves |
 |---|---|
 | **Status-Server** | An [RFC 5997](https://www.rfc-editor.org/rfc/rfc5997) liveness ping that runs first and **consumes no authentication attempt** — nothing shows up in the server's auth log. PASS if the server answers; a neutral INFO (never a failure) if it doesn't, since many servers leave it off. See [Liveness & multi-server](#liveness--comparing-servers). |
-| **Reachability** | The server answers on UDP/1812 — and how fast. A timeout means unreachable, not listening, **or the probe isn't whitelisted / the secret is wrong** (servers silently drop unverifiable requests). |
+| **Reachability** | The server answers on UDP/1812 — and how fast. The request is retransmitted the way a real NAS does before "no reply" is declared, so one lost packet shows as a WARN about loss rather than "server down". A timeout means unreachable, not listening, **or the probe isn't whitelisted / the secret is wrong** (servers silently drop unverifiable requests). Latency comes from the Status-Server reply when the server answers one; otherwise from a rejected test login, which FreeRADIUS delays by `reject_delay` (1 s by default), and the output says so. |
 | **Shared secret** | Cryptographically verifies the server's reply signature. A pass *proves* the secret matches — no more guessing whether "everyone's getting rejected" is a secret problem or something else. |
 | **BlastRADIUS posture** | Observes whether the server signs its replies with a **Message-Authenticator** — the mitigation for the RADIUS/UDP reply-forgery flaw [CVE-2024-3596](https://blastradius.fail) ("BlastRADIUS"). PASS if it does; WARN, with config pointers, if it accepts the probe's (signed) request but replies unsigned. Observation only — see below. |
+
+Reachability, shared secret and BlastRADIUS posture are answered by **one** request (a PAP-shaped Access-Request for the synthetic user `authhound-probe`, which the server rejects), so a run leaves one rejected-login line in the server's log rather than three. Only Status-Server consumes no authentication attempt at all. When the server does not answer that request, the auth, certificate and MTU checks are skipped immediately instead of each waiting out the timeout.
 | **PAP authentication** | A real login with credentials you supply → Accept or Reject, decoded. Also detects an **MFA/second-factor challenge** and reports it (the probe does not complete push/OTP — see below). |
 | **PEAP-MSCHAPv2** | The method most enterprise 802.1X networks actually run: a real inner authentication inside the PEAP TLS tunnel. Reports success — and verifies the server's own MSCHAPv2 proof (mutual auth) — or the decoded reason on rejection. The "can my users actually log in?" test. |
 | **EAP-TTLS (PAP)** | A real login inside the TTLS tunnel using inner PAP. Because the password is checked in cleartext (safe inside the tunnel), TTLS-PAP works against *any* backend — including hashed stores that MSCHAPv2 can't use. If PEAP-MSCHAPv2 fails but this passes, the directory can't produce an NT hash. |
 | **EAP-TLS** | Certificate-based login (no password): presents a client certificate and reports whether the server accepts it — with a plain-English reason on failure (untrusted CA, expired cert, policy reject). See [EAP-TLS: preparing a client certificate](#eap-tls-preparing-a-client-certificate). |
 | **Authorization / VLAN** | On any successful login, decodes and prints the authorization the Access-Accept returned (VLAN, Filter-Id, Session-Timeout, vendor attributes) — and lets you **assert** on it with `--expect-vlan` / `--expect-attr` so "auth works, wrong VLAN" fails loudly. See [Verifying policy](#verifying-policy-not-just-connectivity). |
-| **Server certificate** | Establishes the PEAP/TLS tunnel over RADIUS, captures the server's certificate, and flags **expiry**, an incomplete intermediate chain, a **name mismatch** against `--server-name` (FAIL — clients validating that name would reject the handshake), and the negotiated TLS version. Without `--server-name`, name validation is **skipped and reported as a WARN** — the probe never claims "valid" for a name it didn't check. The "Wi-Fi died overnight" outage, caught early. |
+| **Server certificate** | Establishes the PEAP/TLS tunnel over RADIUS, captures the server's certificate, and flags **expiry** (of the certificate and of any CA certificate sent with it), a missing intermediate (only when the issuer is demonstrably an intermediate — a certificate issued straight from a private root your clients trust is normal and is not warned about), a **name mismatch** against `--server-name` (FAIL — clients validating that name would reject the handshake; a match by Common Name only, with no SAN, is a WARN because Windows accepts it while Android/iOS do not), and the negotiated TLS version. Without `--server-name`, name validation is **skipped and reported as a WARN** — the probe never claims "valid" for a name it didn't check. The "Wi-Fi died overnight" outage, caught early. |
 | **Path MTU / fragmentation** (`--mtu`) | Finds the largest RADIUS packet that survives the round trip. Pinpoints the invisible failure where a firewall or VPN drops large / IP-fragmented UDP, so the multi-kilobyte EAP-TLS certificate flight never arrives and 802.1X silently stalls — while every server-side log looks clean. |
 | **RadSec** (`radsec test`) | Checks a RADIUS/TLS endpoint on TCP/2083: reachability, TLS handshake, server certificate, and a RADIUS exchange over the tunnel. For modern deployments and UDP→RadSec migration readiness. |
 
@@ -206,7 +208,9 @@ $ authhound-probe radsec test --server radius.corp.com \
 | `--expect-vlan ID` | Assert the Access-Accept assigns this VLAN (`Tunnel-Private-Group-ID`). Mismatch = **FAIL** — see [Verifying policy](#verifying-policy-not-just-connectivity). |
 | `--expect-attr Name=Value` | Assert a returned authorization attribute (repeatable), e.g. `--expect-attr Filter-Id=staff`. Mismatch = **FAIL**. |
 | `--mtu` | Run the path-MTU / fragmentation probe (sends a few padded packets). |
-| `--count N` | Run the checks `N` times (2–50) and report aggregate statistics — see [Chasing intermittent failures](#chasing-intermittent-failures). |
+| `--count N` | Run the checks `N` times (2–50) and report aggregate statistics — see [Chasing intermittent failures](#chasing-intermittent-failures). Stops early if the server rejects the test credentials (repeating a rejected password locks accounts). |
+| `--called-station-id VALUE` | Send a Called-Station-Id, e.g. `AA-BB-CC-DD-EE-FF:CorpWiFi`. Wireless policies (NPS conditions, FreeRADIUS unlang) often match the SSID here; without it the probe can land on a different policy than real clients. |
+| `--calling-station-id VALUE` | Send a Calling-Station-Id, e.g. the client MAC `11-22-33-44-55-66`, for MAC-based policies. |
 | `--interval DURATION` | Pause between `--count` iterations (default `2s`; a hard-coded safety floor applies). |
 | `--nas-port-type wireless\|ethernet\|virtual` | How the probe presents itself, so server policies match (default `wireless`). |
 | `--server-name NAME` | Name the server certificate must be valid for (also sent as TLS SNI). Mismatch = **FAIL**; omitted = name validation skipped, reported as a **WARN** — see [Certificate name validation](#certificate-name-validation---server-name). |
@@ -323,6 +327,10 @@ How to read it:
 Iterations run sequentially, `--interval` apart (default `2s`). The probe's
 hard-coded rate ceiling still bounds everything: intervals below the safety
 floor are stretched (and the stretch announced), and `--count` is capped at 50.
+If the server **rejects the test credentials**, the loop stops after that
+iteration and says so: re-sending a rejected password 50 times is how a test
+account trips the domain's lockout threshold, and the aggregate would then
+report a lockout as "consistent failure". Fix the credentials and re-run.
 This is a diagnosis loop you babysit, not monitoring — it never schedules,
 repeats forever, or stores anything between runs.
 

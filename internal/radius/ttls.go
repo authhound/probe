@@ -60,9 +60,15 @@ func (s *EAPSession) AuthEAPTTLS(ctx context.Context, userName, password, server
 
 // ttlsInnerPAP builds the inner Diameter AVPs for TTLS-PAP: User-Name (code 1)
 // and User-Password (code 2), both mandatory, cleartext (the tunnel protects
-// them). RFC 5281 / RFC 6733 AVP framing.
+// them). RFC 5281 / RFC 6733 AVP framing. The password is NUL-padded to a
+// multiple of 16 octets as RFC 5281 §11.2.5 specifies and wpa_supplicant does;
+// servers strip the padding (FreeRADIUS: rlm_eap_ttls uses strlen).
 func ttlsInnerPAP(userName, password string) []byte {
-	return append(diameterAVP(1, []byte(userName)), diameterAVP(2, []byte(password))...)
+	pw := []byte(password)
+	if pad := (16 - len(pw)%16) % 16; pad > 0 {
+		pw = append(pw, make([]byte, pad)...)
+	}
+	return append(diameterAVP(1, []byte(userName)), diameterAVP(2, pw)...)
 }
 
 func diameterAVP(code uint32, data []byte) []byte {

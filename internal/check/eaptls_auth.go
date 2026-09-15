@@ -21,6 +21,7 @@ type EAPTLS struct {
 	CertFile   string
 	KeyFile    string
 	ServerName string
+	Base       *BaseExchange // reachability outcome; nil = always attempt
 }
 
 func (EAPTLS) Name() string { return "eap-tls" }
@@ -33,6 +34,9 @@ func (c EAPTLS) Run(ctx context.Context, t Target) Result {
 		}
 	}
 
+	if r, skip := c.Base.skipIfUnreachable("eap-tls"); skip {
+		return r
+	}
 	cert, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
 	if err != nil {
 		return Result{

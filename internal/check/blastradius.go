@@ -2,7 +2,6 @@ package check
 
 import (
 	"context"
-	"errors"
 
 	"github.com/authhound/probe/internal/radius"
 )
@@ -22,34 +21,32 @@ const BlastRADIUSField = "blastradius_posture"
 // technique — presence/absence on a single exchange, nothing more. And it can
 // only speak to behaviour toward THIS probe's client entry: a server may sign
 // for one client and not another, so the result is scoped to what we can see.
-type BlastRADIUS struct{}
+type BlastRADIUS struct {
+	Base *BaseExchange // shared with Reachability; nil = send its own request
+}
 
 func (BlastRADIUS) Name() string { return "blastradius-posture" }
 
-func (BlastRADIUS) Run(ctx context.Context, t Target) Result {
-	p, err := radius.NewAccessRequest(6)
-	if err != nil {
-		return Result{Check: "blastradius-posture", Status: StatusFail, Summary: "internal error: " + err.Error()}
+func (c BlastRADIUS) Run(ctx context.Context, t Target) Result {
+	// The shared exchange (a PAP-shaped request with a throwaway password) is
+	// enough: we only inspect whether the reply is signed, not whether auth
+	// succeeds — Access-Accept and Access-Reject are both fine.
+	b := c.Base
+	if b == nil || !b.done {
+		b = &BaseExchange{}
+		b.run(t)
 	}
-	p.AddString(radius.AttrUserName, "authhound-probe")
-	// A throwaway password: we only inspect whether the reply is signed, not
-	// whether auth succeeds — Access-Accept and Access-Reject are both fine.
-	p.SetUserPassword("authhound-probe-blastradius-check", t.Secret)
-	addCommon(p, t)
-
-	reqAuth := p.Authenticator
-	_, raw, _, err := radius.Exchange(t.Address, t.Secret, p, t.Timeout, t.LocalAddr)
-	if err != nil {
-		if errors.Is(err, radius.ErrTimeout) {
-			return markTimeout(Result{
-				Check: "blastradius-posture", Status: StatusSkip,
-				Summary: "Could not check reply signing — no reply; resolve reachability first",
-			})
-		}
-		return Result{Check: "blastradius-posture", Status: StatusSkip, Summary: "Could not check reply signing: " + err.Error()}
+	if b.timedOut {
+		return markTimeout(Result{
+			Check: "blastradius-posture", Status: StatusSkip,
+			Summary: "Could not check reply signing — no reply; resolve reachability first",
+		})
+	}
+	if b.err != nil {
+		return Result{Check: "blastradius-posture", Status: StatusSkip, Summary: "Could not check reply signing: " + b.err.Error()}
 	}
 
-	present, valid := radius.VerifyMessageAuthenticator(raw, reqAuth, t.Secret)
+	present, valid := radius.VerifyMessageAuthenticator(b.raw, b.reqAuth, t.Secret)
 	switch {
 	case present && valid:
 		return Result{

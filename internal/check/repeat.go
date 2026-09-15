@@ -46,6 +46,10 @@ type RepeatRun struct {
 	RequestedInterval time.Duration
 	Interval          time.Duration // interval actually used (>= safety floor)
 	Stretched         bool          // requested interval was below the floor
+	// StoppedReason is set when the loop ended before Count on purpose: the
+	// server rejected the test credentials, and repeating a rejected password
+	// is how accounts get locked out (see CredentialRejectedField).
+	StoppedReason string
 }
 
 // EffectiveInterval returns the between-iteration interval a repeat run will
@@ -85,8 +89,24 @@ func RunRepeated(ctx context.Context, r *Runner, plan Plan, opts RepeatOptions) 
 		if opts.OnIteration != nil {
 			opts.OnIteration(i+1, results)
 		}
+		if check := credentialRejected(results); check != "" {
+			run.StoppedReason = fmt.Sprintf("stopped after iteration %d: the server rejected the credentials for %s; "+
+				"repeating a rejected password would lock the account out. Fix the credentials and re-run.", i+1, check)
+			return run, nil
+		}
 	}
 	return run, nil
+}
+
+// credentialRejected returns the name of the first auth check in results that
+// the server answered with a credential reject, or "".
+func credentialRejected(results []Result) string {
+	for _, r := range results {
+		if r.Fields[CredentialRejectedField] == "true" {
+			return r.Check
+		}
+	}
+	return ""
 }
 
 // CheckStats aggregates one check's results across all iterations.

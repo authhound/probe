@@ -175,3 +175,20 @@ func TestAggregateVerdictWording(t *testing.T) {
 		}
 	}
 }
+
+// TestRunRepeatedStopsOnCredentialReject: a rejected password must not be
+// re-sent N times (that is how test accounts get locked out).
+func TestRunRepeatedStopsOnCredentialReject(t *testing.T) {
+	rej := Result{Check: "pap-auth", Status: StatusFail, Fields: map[string]string{CredentialRejectedField: "true"}}
+	plan := Plan{Checks: []Check{&stubCheck{name: "pap-auth", results: []Result{rej, rej, rej}}}}
+	run, err := RunRepeated(context.Background(), &Runner{}, plan, RepeatOptions{Count: 3, Interval: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(run.Iterations) != 1 {
+		t.Errorf("iterations = %d, want 1 (stop after the first reject)", len(run.Iterations))
+	}
+	if !strings.Contains(run.StoppedReason, "pap-auth") || !strings.Contains(run.StoppedReason, "lock") {
+		t.Errorf("StoppedReason = %q", run.StoppedReason)
+	}
+}

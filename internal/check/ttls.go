@@ -16,6 +16,7 @@ type EAPTTLS struct {
 	User       string
 	Pass       string
 	ServerName string
+	Base       *BaseExchange // reachability outcome; nil = always attempt
 }
 
 func (EAPTTLS) Name() string { return "eap-ttls" }
@@ -28,6 +29,9 @@ func (c EAPTTLS) Run(ctx context.Context, t Target) Result {
 		}
 	}
 
+	if r, skip := c.Base.skipIfUnreachable("eap-ttls"); skip {
+		return r
+	}
 	sess := &radius.EAPSession{
 		Addr:      t.Address,
 		Secret:    t.Secret,
@@ -61,6 +65,7 @@ func (c EAPTTLS) Run(ctx context.Context, t Target) Result {
 			Summary: "EAP-TTLS (inner PAP) authentication succeeded for " + c.User,
 		}, res.Accept, t)
 	}
+	fields[CredentialRejectedField] = "true"
 	return Result{
 		Check: "eap-ttls", Status: StatusFail, Fields: fields,
 		Summary: "EAP-TTLS (inner PAP) authentication failed for " + c.User,

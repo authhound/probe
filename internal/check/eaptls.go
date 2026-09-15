@@ -18,11 +18,15 @@ import (
 // and stops before sending any credential or client certificate.
 type ServerCert struct {
 	ServerName string
+	Base       *BaseExchange // reachability outcome; nil = always attempt
 }
 
 func (ServerCert) Name() string { return "server-cert" }
 
 func (c ServerCert) Run(ctx context.Context, t Target) Result {
+	if r, skip := c.Base.skipIfUnreachable("server-cert"); skip {
+		return r
+	}
 	sess := &radius.EAPSession{
 		Addr:      t.Address,
 		Secret:    t.Secret,

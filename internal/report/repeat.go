@@ -22,6 +22,10 @@ type repeatDoc struct {
 	IntervalStretched   bool           `json:"interval_stretched"`
 	Iterations          []iterationDoc `json:"iterations"`
 	Aggregate           []aggregateDoc `json:"aggregate"`
+	// StoppedEarly (additive) explains a run that ended before `count` on
+	// purpose — the credentials were rejected, so repeating would lock the
+	// account. Absent otherwise.
+	StoppedEarly string `json:"stopped_early,omitempty"`
 }
 
 type iterationDoc struct {
@@ -57,6 +61,7 @@ func (s *JSONSink) SetRepeat(count int, run check.RepeatRun, stats []check.Check
 		IntervalStretched:   run.Stretched,
 		Iterations:          []iterationDoc{},
 		Aggregate:           []aggregateDoc{},
+		StoppedEarly:        run.StoppedReason,
 	}
 	for _, iter := range run.Iterations {
 		doc.Iterations = append(doc.Iterations, iterationDoc{Results: iter})
