@@ -269,6 +269,20 @@ $ authhound-probe radius test --server radius.corp.com --peap alice \
     --nas-port-type ethernet --expect-vlan 30
 ```
 
+`NAS-Port-Type` is not the only input a policy branches on. Wireless policies
+routinely match the **SSID** in `Called-Station-Id`, and MAC-based rules match
+the client MAC in `Calling-Station-Id`; if the probe doesn't send them, it can
+match a different policy than your real clients do (a different VLAN, or a
+"did not match any network policy" reject). Present the probe the way the real
+NAS does:
+
+```console
+# as an AP on the CorpWiFi SSID, from a specific client MAC
+$ authhound-probe radius test --server radius.corp.com --peap alice \
+    --called-station-id 'AA-BB-CC-DD-EE-FF:CorpWiFi' \
+    --calling-station-id '11-22-33-44-55-66' --expect-vlan 20
+```
+
 `--expect-attr` generalises this to any returned attribute (repeatable), so you can
 pin a whole policy in a scheduled check:
 
@@ -520,6 +534,18 @@ The key is read from disk only to complete the TLS handshake; it is never
 transmitted or logged. If the cert is untrusted, expired, or rejected by policy,
 the probe says exactly which — so you know whether to fix the cert, the CA trust,
 or the server's authorization rules.
+
+## What's new in v0.5.0
+
+- **Retransmits.** A lost UDP datagram is re-sent the way a real NAS does before "no reply" is declared, so one dropped packet is a warning about packet loss rather than a false "server is down". Scheduled `--strict` runs stop paging on single drops.
+- **One request for three checks.** Reachability, shared secret and BlastRADIUS posture share a single Access-Request, so a run leaves one rejected test login in the server's log instead of three. Checks that depend on reachability skip immediately when the server is silent, instead of each waiting out the timeout.
+- **Honest latency.** The round-trip figure comes from the Status-Server reply when the server answers one; otherwise the output says it includes FreeRADIUS's `reject_delay`.
+- **Better certificate verdicts.** A certificate issued straight from a private root is no longer reported as an incomplete chain; CA certificates sent with it are checked for expiry; a Common-Name-only match (no SAN) is a warning rather than a failure, because Windows accepts it and modern clients don't.
+- **Clearer rejects.** A wrong PEAP password is reported as a credential reject instead of "the server may not offer PEAP", and an EAP-TLS handshake that failed before the server asked for a certificate is no longer blamed on the certificate.
+- **Lockout guard.** `--count` stops as soon as the server rejects the test credentials, instead of re-sending a rejected password up to 50 times.
+- **New flags** `--called-station-id` and `--calling-station-id`, plus IPv6 literals in `--server`.
+
+Full detail in the [release notes](https://github.com/authhound/probe/releases/tag/v0.5.0).
 
 ## Install
 
